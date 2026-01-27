@@ -285,6 +285,9 @@ class AsyncLLM(EngineClient):
     async def get_supported_tasks(self) -> tuple[SupportedTask, ...]:
         return await self.engine_core.get_supported_tasks_async()
 
+    async def get_kv_cache_block_stats(self) -> dict[str, float | int]:
+        return await self.engine_core.get_kv_cache_block_stats_async()
+
     async def add_request(
         self,
         request_id: str,

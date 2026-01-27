@@ -100,12 +100,24 @@ class SchedulerConfig:
     NOTE: This is not currently configurable. It will be overridden by
     max_num_batched_tokens in case max multimodal embedding size is larger."""
 
-    policy: SchedulerPolicy = "fcfs"
+    policy: SchedulerPolicy = "priority"
     """The scheduling policy to use:\n
     - "fcfs" means first come first served, i.e. requests are handled in order
     of arrival.\n
     - "priority" means requests are handled based on given priority (lower
     value means earlier handling) and time of arrival deciding any ties)."""
+
+    mlfq_token_chunk_size: int = Field(default=256, ge=1)
+    """Token chunk size used for MLFQ demotion. A request is demoted by one
+    priority level for every chunk of computed tokens."""
+
+    mlfq_aging_seconds: float = Field(default=5.0, ge=0.0)
+    """Waiting-time aging interval (seconds) to boost priority and prevent
+    starvation. Set to 0 to disable aging."""
+
+    mlfq_waiting_budget_fraction: float = Field(default=0.2, ge=0.0, le=1.0)
+    """Fraction of token budget reserved for waiting requests when priority
+    scheduling is enabled. Improves short-request latency."""
 
     disable_chunked_mm_input: bool = False
     """If set to true and chunked prefill is enabled, we do not want to

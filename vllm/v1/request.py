@@ -78,6 +78,8 @@ class Request:
         self.request_id = request_id
         self.client_index = client_index
         self.priority = priority
+        # Preserve the initial priority for MLFQ adjustments.
+        self.base_priority = priority
         self.sampling_params = sampling_params
         self.pooling_params = pooling_params
         # Because of LoRA, the eos token id can be different for each request.

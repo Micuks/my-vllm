@@ -13,6 +13,7 @@ import signal
 import socket
 import tempfile
 import uuid
+import time
 from argparse import Namespace
 from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager
@@ -209,6 +210,88 @@ async def build_async_engine_client_from_engine_args(
 router = APIRouter()
 
 
+def _classify_backpressure_state(free_fraction: float) -> str:
+    yellow = max(0.0, min(1.0, envs.VLLM_BACKPRESSURE_YELLOW_FREE_RATIO))
+    red = max(0.0, min(1.0, envs.VLLM_BACKPRESSURE_RED_FREE_RATIO))
+    if red > yellow:
+        red = yellow
+    if free_fraction <= red:
+        return "red"
+    if free_fraction <= yellow:
+        return "yellow"
+    return "green"
+
+
+async def _get_kv_cache_block_stats(request: Request) -> dict[str, float | int]:
+    cache = request.app.state.kv_cache_stats_cache
+    now = time.monotonic()
+    refresh_s = max(0.0, envs.VLLM_BACKPRESSURE_REFRESH_S)
+    if cache["stats"] is not None and (now - cache["timestamp"] < refresh_s):
+        return cache["stats"]
+    stats = await request.app.state.engine_client.get_kv_cache_block_stats()
+    cache["timestamp"] = now
+    cache["stats"] = stats
+    return stats
+
+
+def _get_priority_and_max_tokens(payload: Any) -> tuple[int | None, int | None]:
+    if not isinstance(payload, dict):
+        return None, None
+    priority_value = payload.get("priority")
+    priority = None
+    if priority_value is not None:
+        try:
+            priority = int(priority_value)
+        except (TypeError, ValueError):
+            priority = None
+
+    max_tokens = None
+    for key in (
+        "max_tokens",
+        "max_completion_tokens",
+        "max_output_tokens",
+        "max_new_tokens",
+    ):
+        if key in payload:
+            try:
+                max_tokens = int(payload[key])
+            except (TypeError, ValueError):
+                max_tokens = None
+            break
+    return priority, max_tokens
+
+
+async def _is_short_or_high_priority_request(request: Request) -> bool:
+    content_type = request.headers.get("content-type", "")
+    if "application/json" not in content_type.lower():
+        return True
+    try:
+        payload = await request.json()
+    except Exception:
+        return False
+    priority, max_tokens = _get_priority_and_max_tokens(payload)
+    if priority is not None and priority <= envs.VLLM_BACKPRESSURE_PRIORITY_CUTOFF:
+        return True
+    if max_tokens is not None and max_tokens <= envs.VLLM_BACKPRESSURE_SHORT_MAX_TOKENS:
+        return True
+    return False
+
+
+def _backpressure_error(message: str) -> JSONResponse:
+    err = ErrorResponse(
+        error=ErrorInfo(
+            message=sanitize_message(message),
+            type=HTTPStatus.SERVICE_UNAVAILABLE.phrase,
+            code=HTTPStatus.SERVICE_UNAVAILABLE,
+        )
+    )
+    return JSONResponse(
+        err.model_dump(),
+        status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+        headers={"Retry-After": "1"},
+    )
+
+
 def base(request: Request) -> OpenAIServing:
     # Reuse the existing instance
     return tokenization(request)
@@ -244,6 +327,24 @@ async def get_server_load_metrics(request: Request):
     # - /v2/rerank
     return JSONResponse(content={"server_load": request.app.state.server_load_metrics})
 
+
+@router.get("/health/credits")
+async def get_health_credits(request: Request):
+    stats = await _get_kv_cache_block_stats(request)
+    free_fraction = float(stats.get("free_fraction", 0.0))
+    state = _classify_backpressure_state(free_fraction)
+    return JSONResponse(
+        content={
+            "state": state,
+            "free_blocks": stats.get("free_blocks", 0),
+            "total_blocks": stats.get("total_blocks", 0),
+            "free_fraction": free_fraction,
+            "thresholds": {
+                "yellow": envs.VLLM_BACKPRESSURE_YELLOW_FREE_RATIO,
+                "red": envs.VLLM_BACKPRESSURE_RED_FREE_RATIO,
+            },
+        }
+    )
 
 @router.get("/version")
 async def show_version():
@@ -577,6 +678,48 @@ def build_app(args: Namespace) -> FastAPI:
         allow_headers=args.allowed_headers,
     )
 
+    if envs.VLLM_BACKPRESSURE_ENABLED:
+
+        @app.middleware("http")
+        async def backpressure_middleware(request: Request, call_next):
+            if request.method != "POST":
+                return await call_next(request)
+            root_path = request.scope.get("root_path", "")
+            url_path = URL(scope=request.scope).path.removeprefix(root_path)
+            if url_path in (
+                "/health",
+                "/health/credits",
+                "/metrics",
+                "/load",
+                "/version",
+            ):
+                return await call_next(request)
+            target_prefixes = (
+                "/v1",
+                "/pooling",
+                "/classify",
+                "/score",
+                "/rerank",
+                "/v2/rerank",
+            )
+            if not url_path.startswith(target_prefixes):
+                return await call_next(request)
+
+            stats = await _get_kv_cache_block_stats(request)
+            free_fraction = float(stats.get("free_fraction", 0.0))
+            state = _classify_backpressure_state(free_fraction)
+            if state == "green":
+                return await call_next(request)
+            if state == "red":
+                return _backpressure_error(
+                    "Backpressure: insufficient KV cache credits."
+                )
+            if not await _is_short_or_high_priority_request(request):
+                return _backpressure_error(
+                    "Backpressure: only short or high-priority requests are accepted."
+                )
+            return await call_next(request)
+
     @app.exception_handler(HTTPException)
     async def http_exception_handler(_: Request, exc: HTTPException):
         err = ErrorResponse(
@@ -859,6 +1002,7 @@ async def init_app_state(
 
     state.enable_server_load_tracking = args.enable_server_load_tracking
     state.server_load_metrics = 0
+    state.kv_cache_stats_cache = {"timestamp": 0.0, "stats": None}
 
 
 def create_server_socket(addr: tuple[str, int]) -> socket.socket:

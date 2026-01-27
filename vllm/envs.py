@@ -85,6 +85,12 @@ if TYPE_CHECKING:
     VLLM_ALLOW_LONG_MAX_MODEL_LEN: bool = False
     VLLM_RPC_TIMEOUT: int = 10000  # ms
     VLLM_HTTP_TIMEOUT_KEEP_ALIVE: int = 5  # seconds
+    VLLM_BACKPRESSURE_ENABLED: bool = False
+    VLLM_BACKPRESSURE_YELLOW_FREE_RATIO: float = 0.2
+    VLLM_BACKPRESSURE_RED_FREE_RATIO: float = 0.05
+    VLLM_BACKPRESSURE_SHORT_MAX_TOKENS: int = 256
+    VLLM_BACKPRESSURE_PRIORITY_CUTOFF: int = -1
+    VLLM_BACKPRESSURE_REFRESH_S: float = 0.2
     VLLM_PLUGINS: list[str] | None = None
     VLLM_LORA_RESOLVER_CACHE_DIR: str | None = None
     VLLM_LORA_RESOLVER_HF_REPO_LIST: str | None = None
@@ -857,6 +863,26 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Timeout in seconds for keeping HTTP connections alive in API server
     "VLLM_HTTP_TIMEOUT_KEEP_ALIVE": lambda: int(
         os.environ.get("VLLM_HTTP_TIMEOUT_KEEP_ALIVE", "5")
+    ),
+    # Backpressure / credits control for API server.
+    "VLLM_BACKPRESSURE_ENABLED": lambda: bool(
+        int(os.getenv("VLLM_BACKPRESSURE_ENABLED", "1"))
+    ),
+    "VLLM_BACKPRESSURE_YELLOW_FREE_RATIO": lambda: float(
+        os.getenv("VLLM_BACKPRESSURE_YELLOW_FREE_RATIO", "0.2")
+    ),
+    "VLLM_BACKPRESSURE_RED_FREE_RATIO": lambda: float(
+        os.getenv("VLLM_BACKPRESSURE_RED_FREE_RATIO", "0.05")
+    ),
+    "VLLM_BACKPRESSURE_SHORT_MAX_TOKENS": lambda: int(
+        os.getenv("VLLM_BACKPRESSURE_SHORT_MAX_TOKENS", "256")
+    ),
+    # Lower number means higher priority; default only accepts explicitly higher priority.
+    "VLLM_BACKPRESSURE_PRIORITY_CUTOFF": lambda: int(
+        os.getenv("VLLM_BACKPRESSURE_PRIORITY_CUTOFF", "-1")
+    ),
+    "VLLM_BACKPRESSURE_REFRESH_S": lambda: float(
+        os.getenv("VLLM_BACKPRESSURE_REFRESH_S", "0.2")
     ),
     # a list of plugin names to load, separated by commas.
     # if this is not set, it means all plugins will be loaded
@@ -1733,6 +1759,12 @@ def compile_factors() -> dict[str, object]:
         "VLLM_TUNED_CONFIG_FOLDER",
         "VLLM_ENGINE_ITERATION_TIMEOUT_S",
         "VLLM_HTTP_TIMEOUT_KEEP_ALIVE",
+        "VLLM_BACKPRESSURE_ENABLED",
+        "VLLM_BACKPRESSURE_YELLOW_FREE_RATIO",
+        "VLLM_BACKPRESSURE_RED_FREE_RATIO",
+        "VLLM_BACKPRESSURE_SHORT_MAX_TOKENS",
+        "VLLM_BACKPRESSURE_PRIORITY_CUTOFF",
+        "VLLM_BACKPRESSURE_REFRESH_S",
         "VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS",
         "VLLM_KEEP_ALIVE_ON_ENGINE_DEATH",
         "VLLM_SLEEP_WHEN_IDLE",

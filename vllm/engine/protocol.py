@@ -191,3 +191,7 @@ class EngineClient(ABC):
     async def get_supported_tasks(self) -> tuple[SupportedTask, ...]:
         """Get supported tasks"""
         raise NotImplementedError
+
+    async def get_kv_cache_block_stats(self) -> dict[str, float | int]:
+        """Get KV cache block stats for backpressure/credits."""
+        raise NotImplementedError

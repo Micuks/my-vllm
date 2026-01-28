@@ -179,6 +179,7 @@ class AsyncLLM(EngineClient):
         self._paused = False
 
         self.output_handler: asyncio.Task | None = None
+        self.backpressure_handler: asyncio.Task | None = None
         try:
             # Start output handler eagerly if we are in the asyncio eventloop.
             asyncio.get_running_loop()
@@ -281,6 +282,10 @@ class AsyncLLM(EngineClient):
         handler = getattr(self, "output_handler", None)
         if handler is not None:
             cancel_task_threadsafe(handler)
+
+        backpressure_handler = getattr(self, "backpressure_handler", None)
+        if backpressure_handler is not None:
+            cancel_task_threadsafe(backpressure_handler)
 
     async def get_supported_tasks(self) -> tuple[SupportedTask, ...]:
         return await self.engine_core.get_supported_tasks_async()
@@ -644,6 +649,12 @@ class AsyncLLM(EngineClient):
         logger_manager = self.logger_manager
         input_processor = self.input_processor
         chunk_size = envs.VLLM_V1_OUTPUT_PROC_CHUNK_SIZE
+        scheduler_config = self.vllm_config.scheduler_config
+        backpressure_interval_s = scheduler_config.output_backpressure_update_interval_s
+        backpressure_enabled = backpressure_interval_s > 0 and (
+            scheduler_config.output_backpressure_pending_tokens > 0
+            or scheduler_config.output_backpressure_lag_seconds > 0
+        )
 
         async def output_handler():
             try:
@@ -697,6 +708,24 @@ class AsyncLLM(EngineClient):
                 output_processor.propagate_error(e)
 
         self.output_handler = asyncio.create_task(output_handler())
+
+        if backpressure_enabled and self.backpressure_handler is None:
+
+            async def backpressure_reporter():
+                try:
+                    while True:
+                        await asyncio.sleep(backpressure_interval_s)
+                        updates = output_processor.collect_output_backpressure_updates()
+                        if updates:
+                            await engine_core.update_request_backpressure_async(
+                                updates
+                            )
+                except asyncio.CancelledError:
+                    return
+                except Exception:
+                    logger.exception("AsyncLLM backpressure_reporter failed.")
+
+            self.backpressure_handler = asyncio.create_task(backpressure_reporter())
 
     async def abort(
         self, request_id: str | Iterable[str], internal: bool = False

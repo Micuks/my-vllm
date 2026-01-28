@@ -204,8 +204,9 @@ class EngineCoreRequestType(enum.Enum):
     ABORT = b"\x01"
     START_DP_WAVE = b"\x02"
     UTILITY = b"\x03"
+    UPDATE_BACKPRESSURE = b"\x04"
     # Sentinel used within EngineCoreProc.
-    EXECUTOR_FAILED = b"\x04"
+    EXECUTOR_FAILED = b"\x05"
 
 
 class ReconfigureDistributedRequest(msgspec.Struct):

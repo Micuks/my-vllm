@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import asyncio
+import time
 from collections import defaultdict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -51,11 +52,33 @@ class RequestOutputCollector:
         self.request_id = request_id
         self.output: RequestOutput | PoolingRequestOutput | Exception | None = None
         self.ready = asyncio.Event()
+        self.pending_tokens = 0
+        self.last_get_time = time.monotonic()
+        self._last_output_token_counts: dict[int, int] = {}
 
         self._input_stream_task: asyncio.Task | None = None
 
+    def _count_new_tokens(
+        self, output: RequestOutput | PoolingRequestOutput | Exception
+    ) -> int:
+        if not isinstance(output, RequestOutput):
+            return 0
+        if self.aggregate:
+            return sum(len(completion.token_ids) for completion in output.outputs)
+        tokens_added = 0
+        for completion in output.outputs:
+            current_len = len(completion.token_ids)
+            prev_len = self._last_output_token_counts.get(completion.index, 0)
+            if current_len > prev_len:
+                tokens_added += current_len - prev_len
+            self._last_output_token_counts[completion.index] = current_len
+        return tokens_added
+
     def put(self, output: RequestOutput | PoolingRequestOutput | Exception) -> None:
         """Non-blocking put operation."""
+        tokens_added = self._count_new_tokens(output)
+        if tokens_added:
+            self.pending_tokens += tokens_added
         if self.output is None or isinstance(output, Exception):
             self.output = output
             self.ready.set()
@@ -78,6 +101,8 @@ class RequestOutputCollector:
         self.ready.clear()
         if isinstance(output, Exception):
             raise output
+        self.pending_tokens = 0
+        self.last_get_time = time.monotonic()
         return output
 
     def get_nowait(self) -> RequestOutput | PoolingRequestOutput | None:
@@ -88,7 +113,13 @@ class RequestOutputCollector:
             self.ready.clear()
         if isinstance(output, Exception):
             raise output
+        if output is not None:
+            self.pending_tokens = 0
+            self.last_get_time = time.monotonic()
         return output
+
+    def get_backpressure_state(self) -> tuple[int, float]:
+        return self.pending_tokens, self.last_get_time
 
     def close(self):
         if self._input_stream_task is not None:
@@ -705,6 +736,16 @@ class OutputProcessor:
 
     def update_scheduler_stats(self, scheduler_stats: SchedulerStats | None):
         self.lora_states.update_scheduler_stats(scheduler_stats)
+
+    def collect_output_backpressure_updates(self) -> list[tuple[str, int, float]]:
+        updates: list[tuple[str, int, float]] = []
+        for req_state in self.request_states.values():
+            queue = req_state.queue
+            if queue is None:
+                continue
+            pending_tokens, last_get_time = queue.get_backpressure_state()
+            updates.append((req_state.request_id, pending_tokens, last_get_time))
+        return updates
 
     def do_tracing(
         self,

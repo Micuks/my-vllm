@@ -119,6 +119,35 @@ class SchedulerConfig:
     """Fraction of token budget reserved for waiting requests when priority
     scheduling is enabled. Improves short-request latency."""
 
+    mlfq_sjf_token_chunk_size: int = Field(default=0, ge=0)
+    """Token chunk size used for SJF penalties. Set to 0 to disable SJF
+    adjustments."""
+
+    mlfq_sjf_weight: float = Field(default=0.0, ge=0.0)
+    """Weight applied to the SJF penalty (per chunk)."""
+
+    mlfq_locality_weight: float = Field(default=0.0, ge=0.0)
+    """Weight applied to prefix-cache locality boosts (per chunk)."""
+
+    output_backpressure_pending_tokens: int = Field(default=0, ge=0)
+    """Pending output token threshold to apply backpressure. Set to 0 to
+    disable output backpressure."""
+
+    output_backpressure_penalty: int = Field(default=0, ge=0)
+    """Priority penalty per backpressure level."""
+
+    output_backpressure_max_tokens: int = Field(default=0, ge=0)
+    """Max tokens scheduled per iteration for backpressured requests.
+    Set to 0 to disable the cap."""
+
+    output_backpressure_lag_seconds: float = Field(default=0.0, ge=0.0)
+    """Seconds since last client consumption to trigger backpressure.
+    Set to 0 to disable lag-based backpressure."""
+
+    output_backpressure_update_interval_s: float = Field(default=0.1, ge=0.0)
+    """Interval at which frontend reports backpressure stats.
+    Set to 0 to disable updates."""
+
     disable_chunked_mm_input: bool = False
     """If set to true and chunked prefill is enabled, we do not want to
     partially schedule a multimodal item. Only used in V1

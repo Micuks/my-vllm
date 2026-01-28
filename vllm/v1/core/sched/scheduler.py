@@ -272,6 +272,63 @@ class Scheduler(SchedulerInterface):
     def _clear_waiting(self, request: Request) -> None:
         self.waiting_since.pop(request.request_id, None)
 
+    def _remaining_tokens(self, request: Request) -> int:
+        total_tokens = request.num_prompt_tokens + request.max_tokens
+        return max(0, total_tokens - request.num_computed_tokens)
+
+    def _sjf_penalty(self, request: Request) -> int:
+        chunk_size = self.scheduler_config.mlfq_sjf_token_chunk_size
+        weight = self.scheduler_config.mlfq_sjf_weight
+        if chunk_size <= 0 or weight <= 0:
+            return 0
+        remaining = self._remaining_tokens(request)
+        return int((remaining // max(1, chunk_size)) * weight)
+
+    def _locality_boost(self, request: Request) -> int:
+        weight = self.scheduler_config.mlfq_locality_weight
+        if weight <= 0:
+            return 0
+        cached_tokens = max(0, request.num_cached_tokens)
+        chunk_size = max(1, self.scheduler_config.mlfq_token_chunk_size)
+        return int((cached_tokens // chunk_size) * weight)
+
+    def _backpressure_penalty(self, request: Request, timestamp: float) -> int:
+        penalty = 0
+        pending_threshold = self.scheduler_config.output_backpressure_pending_tokens
+        level_penalty = self.scheduler_config.output_backpressure_penalty
+        if pending_threshold > 0 and level_penalty > 0:
+            pending = request.output_pending_tokens
+            if pending >= pending_threshold:
+                levels = max(1, pending // pending_threshold)
+                penalty += levels * level_penalty
+
+        lag_threshold = self.scheduler_config.output_backpressure_lag_seconds
+        if (
+            lag_threshold > 0
+            and level_penalty > 0
+            and request.num_output_tokens > 0
+            and timestamp - request.output_last_consume_ts >= lag_threshold
+        ):
+            penalty += level_penalty
+        return penalty
+
+    def _is_backpressured(self, request: Request, timestamp: float) -> bool:
+        pending_threshold = self.scheduler_config.output_backpressure_pending_tokens
+        lag_threshold = self.scheduler_config.output_backpressure_lag_seconds
+        if pending_threshold <= 0 and lag_threshold <= 0:
+            return False
+        if request.num_output_tokens == 0 and request.output_pending_tokens == 0:
+            return False
+        if pending_threshold > 0 and request.output_pending_tokens >= pending_threshold:
+            return True
+        if (
+            lag_threshold > 0
+            and request.num_output_tokens > 0
+            and timestamp - request.output_last_consume_ts >= lag_threshold
+        ):
+            return True
+        return False
+
     def _effective_priority(
         self,
         request: Request,
@@ -283,6 +340,9 @@ class Scheduler(SchedulerInterface):
         chunk_size = max(1, self.scheduler_config.mlfq_token_chunk_size)
         token_penalty = request.num_computed_tokens // chunk_size
         priority = base_priority + token_penalty
+        priority += self._sjf_penalty(request)
+        priority += self._backpressure_penalty(request, timestamp)
+        priority -= self._locality_boost(request)
         if include_aging and self.scheduler_config.mlfq_aging_seconds > 0:
             waiting_since = self.waiting_since.get(request.request_id)
             if waiting_since is not None:
@@ -321,6 +381,17 @@ class Scheduler(SchedulerInterface):
             for request in waiting_requests:
                 rebuilt_waiting.add_request(request)
             self.waiting = rebuilt_waiting
+
+    def update_request_backpressure(
+        self, updates: Iterable[tuple[str, int, float]]
+    ) -> None:
+        for req_id, pending_tokens, last_consume_ts in updates:
+            request = self.requests.get(req_id)
+            if request is None:
+                continue
+            request.output_pending_tokens = max(0, int(pending_tokens))
+            if last_consume_ts > 0:
+                request.output_last_consume_ts = last_consume_ts
 
     def _preempt_running_request_in_step(
         self,
@@ -517,6 +588,11 @@ class Scheduler(SchedulerInterface):
                 num_new_tokens = self._mamba_block_aligned_split(
                     request, num_new_tokens
                 )
+
+            if self._is_backpressured(request, scheduled_timestamp):
+                max_tokens = self.scheduler_config.output_backpressure_max_tokens
+                if max_tokens > 0:
+                    num_new_tokens = min(num_new_tokens, max_tokens)
 
             if num_new_tokens == 0:
                 # The request cannot be scheduled because one of the following
@@ -802,6 +878,11 @@ class Scheduler(SchedulerInterface):
                 )
                 if num_new_tokens == 0:
                     break
+
+            if self._is_backpressured(request, scheduled_timestamp):
+                max_tokens = self.scheduler_config.output_backpressure_max_tokens
+                if max_tokens > 0:
+                    num_new_tokens = min(num_new_tokens, max_tokens)
 
             # Handles an edge case when P/D Disaggregation
             # is used with Spec Decoding where an

@@ -318,3 +318,8 @@ windo = "windo"
 
 [tool.uv]
 no-build-isolation-package = ["torch"]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]

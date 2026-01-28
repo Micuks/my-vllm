@@ -438,6 +438,23 @@ class EngineArgs:
     max_num_partial_prefills: int = SchedulerConfig.max_num_partial_prefills
     max_long_partial_prefills: int = SchedulerConfig.max_long_partial_prefills
     long_prefill_token_threshold: int = SchedulerConfig.long_prefill_token_threshold
+    mlfq_token_chunk_size: int = SchedulerConfig.mlfq_token_chunk_size
+    mlfq_aging_seconds: float = SchedulerConfig.mlfq_aging_seconds
+    mlfq_waiting_budget_fraction: float = SchedulerConfig.mlfq_waiting_budget_fraction
+    mlfq_sjf_token_chunk_size: int = SchedulerConfig.mlfq_sjf_token_chunk_size
+    mlfq_sjf_weight: float = SchedulerConfig.mlfq_sjf_weight
+    mlfq_locality_weight: float = SchedulerConfig.mlfq_locality_weight
+    output_backpressure_pending_tokens: int = (
+        SchedulerConfig.output_backpressure_pending_tokens
+    )
+    output_backpressure_penalty: int = SchedulerConfig.output_backpressure_penalty
+    output_backpressure_max_tokens: int = SchedulerConfig.output_backpressure_max_tokens
+    output_backpressure_lag_seconds: float = (
+        SchedulerConfig.output_backpressure_lag_seconds
+    )
+    output_backpressure_update_interval_s: float = (
+        SchedulerConfig.output_backpressure_update_interval_s
+    )
     max_num_seqs: int | None = None
     max_logprobs: int = ModelConfig.max_logprobs
     logprobs_mode: LogprobsMode = ModelConfig.logprobs_mode
@@ -1112,6 +1129,48 @@ class EngineArgs:
             "--scheduling-policy", **scheduler_kwargs["policy"]
         )
         scheduler_group.add_argument(
+            "--mlfq-token-chunk-size", **scheduler_kwargs["mlfq_token_chunk_size"]
+        )
+        scheduler_group.add_argument(
+            "--mlfq-aging-seconds", **scheduler_kwargs["mlfq_aging_seconds"]
+        )
+        scheduler_group.add_argument(
+            "--mlfq-waiting-budget-fraction",
+            **scheduler_kwargs["mlfq_waiting_budget_fraction"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-sjf-token-chunk-size",
+            **scheduler_kwargs["mlfq_sjf_token_chunk_size"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-sjf-weight",
+            **scheduler_kwargs["mlfq_sjf_weight"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-locality-weight",
+            **scheduler_kwargs["mlfq_locality_weight"],
+        )
+        scheduler_group.add_argument(
+            "--output-backpressure-pending-tokens",
+            **scheduler_kwargs["output_backpressure_pending_tokens"],
+        )
+        scheduler_group.add_argument(
+            "--output-backpressure-penalty",
+            **scheduler_kwargs["output_backpressure_penalty"],
+        )
+        scheduler_group.add_argument(
+            "--output-backpressure-max-tokens",
+            **scheduler_kwargs["output_backpressure_max_tokens"],
+        )
+        scheduler_group.add_argument(
+            "--output-backpressure-lag-seconds",
+            **scheduler_kwargs["output_backpressure_lag_seconds"],
+        )
+        scheduler_group.add_argument(
+            "--output-backpressure-update-interval-s",
+            **scheduler_kwargs["output_backpressure_update_interval_s"],
+        )
+        scheduler_group.add_argument(
             "--enable-chunked-prefill",
             **{
                 **scheduler_kwargs["enable_chunked_prefill"],
@@ -1648,6 +1707,19 @@ class EngineArgs:
             max_num_partial_prefills=self.max_num_partial_prefills,
             max_long_partial_prefills=self.max_long_partial_prefills,
             long_prefill_token_threshold=self.long_prefill_token_threshold,
+            mlfq_token_chunk_size=self.mlfq_token_chunk_size,
+            mlfq_aging_seconds=self.mlfq_aging_seconds,
+            mlfq_waiting_budget_fraction=self.mlfq_waiting_budget_fraction,
+            mlfq_sjf_token_chunk_size=self.mlfq_sjf_token_chunk_size,
+            mlfq_sjf_weight=self.mlfq_sjf_weight,
+            mlfq_locality_weight=self.mlfq_locality_weight,
+            output_backpressure_pending_tokens=self.output_backpressure_pending_tokens,
+            output_backpressure_penalty=self.output_backpressure_penalty,
+            output_backpressure_max_tokens=self.output_backpressure_max_tokens,
+            output_backpressure_lag_seconds=self.output_backpressure_lag_seconds,
+            output_backpressure_update_interval_s=(
+                self.output_backpressure_update_interval_s
+            ),
             disable_hybrid_kv_cache_manager=self.disable_hybrid_kv_cache_manager,
             async_scheduling=self.async_scheduling,
             stream_interval=self.stream_interval,

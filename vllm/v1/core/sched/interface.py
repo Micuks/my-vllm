@@ -137,6 +137,13 @@ class SchedulerInterface(ABC):
         """
         raise NotImplementedError
 
+    def update_request_backpressure(
+        self,
+        updates: Iterable[tuple[str, int, float]],
+    ) -> None:
+        """Update per-request output backpressure stats."""
+        return None
+
     @abstractmethod
     def get_num_unfinished_requests(self) -> int:
         """Number of unfinished requests in the scheduler's internal queue."""

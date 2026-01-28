@@ -165,6 +165,11 @@ class EngineCoreClient(ABC):
     def abort_requests(self, request_ids: list[str]) -> None:
         raise NotImplementedError
 
+    def update_request_backpressure(
+        self, updates: list[tuple[str, int, float]]
+    ) -> None:
+        raise NotImplementedError
+
     def add_lora(self, lora_request: LoRARequest) -> bool:
         raise NotImplementedError
 
@@ -234,6 +239,11 @@ class EngineCoreClient(ABC):
     async def abort_requests_async(self, request_ids: list[str]) -> None:
         raise NotImplementedError
 
+    async def update_request_backpressure_async(
+        self, updates: list[tuple[str, int, float]]
+    ) -> None:
+        raise NotImplementedError
+
     async def add_lora_async(self, lora_request: LoRARequest) -> bool:
         raise NotImplementedError
 
@@ -292,6 +302,12 @@ class InprocClient(EngineCoreClient):
     def abort_requests(self, request_ids: list[str]) -> None:
         if len(request_ids) > 0:
             self.engine_core.abort_requests(request_ids)
+
+    def update_request_backpressure(
+        self, updates: list[tuple[str, int, float]]
+    ) -> None:
+        if updates:
+            self.engine_core.update_request_backpressure(updates)
 
     def shutdown(self) -> None:
         self.engine_core.shutdown()
@@ -764,6 +780,12 @@ class SyncMPClient(MPClient):
         if request_ids and not self.resources.engine_dead:
             self._send_input(EngineCoreRequestType.ABORT, request_ids)
 
+    def update_request_backpressure(
+        self, updates: list[tuple[str, int, float]]
+    ) -> None:
+        if updates and not self.resources.engine_dead:
+            self._send_input(EngineCoreRequestType.UPDATE_BACKPRESSURE, updates)
+
     def profile(self, is_start: bool = True) -> None:
         self.call_utility("profile", is_start)
 
@@ -974,6 +996,14 @@ class AsyncMPClient(MPClient):
     async def abort_requests_async(self, request_ids: list[str]) -> None:
         if request_ids and not self.resources.engine_dead:
             await self._send_input(EngineCoreRequestType.ABORT, request_ids)
+
+    async def update_request_backpressure_async(
+        self, updates: list[tuple[str, int, float]]
+    ) -> None:
+        if updates and not self.resources.engine_dead:
+            await self._send_input(
+                EngineCoreRequestType.UPDATE_BACKPRESSURE, updates
+            )
 
     async def profile_async(self, is_start: bool = True) -> None:
         await self.call_utility_async("profile", is_start)
@@ -1279,6 +1309,24 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
                 by_engine[engine].append(req_id)
         for engine, req_ids in by_engine.items():
             await self._abort_requests(req_ids, engine)
+
+    async def update_request_backpressure_async(
+        self, updates: list[tuple[str, int, float]]
+    ) -> None:
+        if not updates or self.resources.engine_dead:
+            return
+
+        by_engine = defaultdict[EngineIdentity, list[tuple[str, int, float]]](list)
+        for req_id, pending_tokens, last_consume_ts in updates:
+            if engine := self.reqs_in_flight.get(req_id):
+                by_engine[engine].append((req_id, pending_tokens, last_consume_ts))
+
+        for engine, engine_updates in by_engine.items():
+            await self._send_input(
+                EngineCoreRequestType.UPDATE_BACKPRESSURE,
+                engine_updates,
+                engine,
+            )
 
     async def _abort_requests(
         self, request_ids: list[str], engine: EngineIdentity

@@ -153,6 +153,10 @@ class Request:
         # indicates that the output is corrupted
         self.num_nans_in_logits = 0
 
+        # Backpressure tracking (updated by frontend).
+        self.output_pending_tokens = 0
+        self.output_last_consume_ts = time.monotonic()
+
         # The number of times this request has been preempted by the scheduler.
         self.num_preemptions = 0
 

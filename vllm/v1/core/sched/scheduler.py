@@ -350,6 +350,20 @@ class Scheduler(SchedulerInterface):
             return True
         return False
 
+    def _backpressure_token_cap(self, request: Request) -> int:
+        max_tokens = self.scheduler_config.output_backpressure_max_tokens
+        if max_tokens <= 0:
+            return 0
+        min_tokens = self.scheduler_config.output_backpressure_min_tokens
+        cap = max_tokens
+        pending_threshold = self.scheduler_config.output_backpressure_pending_tokens
+        pending = request.output_pending_tokens
+        if pending_threshold > 0 and pending >= pending_threshold and pending > 0:
+            scaled = int(max_tokens * pending_threshold / pending)
+            cap = max(min_tokens, scaled)
+        cap = max(min_tokens, min(max_tokens, cap))
+        return cap
+
     def _effective_priority(
         self,
         request: Request,
@@ -611,9 +625,9 @@ class Scheduler(SchedulerInterface):
                 )
 
             if self._is_backpressured(request, scheduled_timestamp):
-                max_tokens = self.scheduler_config.output_backpressure_max_tokens
-                if max_tokens > 0:
-                    num_new_tokens = min(num_new_tokens, max_tokens)
+                cap = self._backpressure_token_cap(request)
+                if cap > 0:
+                    num_new_tokens = min(num_new_tokens, cap)
 
             if num_new_tokens == 0:
                 # The request cannot be scheduled because one of the following
@@ -901,9 +915,9 @@ class Scheduler(SchedulerInterface):
                     break
 
             if self._is_backpressured(request, scheduled_timestamp):
-                max_tokens = self.scheduler_config.output_backpressure_max_tokens
-                if max_tokens > 0:
-                    num_new_tokens = min(num_new_tokens, max_tokens)
+                cap = self._backpressure_token_cap(request)
+                if cap > 0:
+                    num_new_tokens = min(num_new_tokens, cap)
 
             # Handles an edge case when P/D Disaggregation
             # is used with Spec Decoding where an

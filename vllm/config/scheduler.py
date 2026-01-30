@@ -154,6 +154,10 @@ class SchedulerConfig:
     """Max tokens scheduled per iteration for backpressured requests.
     Set to 0 to disable the cap."""
 
+    output_backpressure_min_tokens: int = Field(default=0, ge=0)
+    """Minimum token cap when backpressure scaling is applied. Set to 0 to
+    disable the floor."""
+
     output_backpressure_lag_seconds: float = Field(default=0.0, ge=0.0)
     """Seconds since last client consumption to trigger backpressure.
     Set to 0 to disable lag-based backpressure."""
@@ -294,6 +298,16 @@ class SchedulerConfig:
                 self.max_num_partial_prefills,
                 self.max_long_partial_prefills,
                 self.long_prefill_token_threshold,
+            )
+
+        if (
+            self.output_backpressure_max_tokens > 0
+            and self.output_backpressure_min_tokens
+            > self.output_backpressure_max_tokens
+        ):
+            raise ValueError(
+                "output_backpressure_min_tokens must be <= "
+                "output_backpressure_max_tokens."
             )
 
         self.verify_max_model_len(max_model_len)

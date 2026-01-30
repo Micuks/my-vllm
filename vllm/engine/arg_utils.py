@@ -1175,6 +1175,10 @@ class EngineArgs:
             **scheduler_kwargs["output_backpressure_max_tokens"],
         )
         scheduler_group.add_argument(
+            "--output-backpressure-min-tokens",
+            **scheduler_kwargs["output_backpressure_min_tokens"],
+        )
+        scheduler_group.add_argument(
             "--output-backpressure-lag-seconds",
             **scheduler_kwargs["output_backpressure_lag_seconds"],
         )

@@ -29,6 +29,7 @@ def test_mlfq_short_request_preempts_long_with_budget_slice():
         num_tokens=4,
         max_tokens=8,
         block_size=1,
+        req_ids=["long_request"],
     )[0]
     scheduler.add_request(long_request)
 
@@ -41,6 +42,7 @@ def test_mlfq_short_request_preempts_long_with_budget_slice():
         num_tokens=1,
         max_tokens=1,
         block_size=1,
+        req_ids=["short_request"],
     )[0]
     scheduler.add_request(short_request)
 

@@ -126,8 +126,22 @@ class SchedulerConfig:
     mlfq_sjf_weight: float = Field(default=0.0, ge=0.0)
     """Weight applied to the SJF penalty (per chunk)."""
 
+    mlfq_sjf_prefill_weight: float | None = Field(default=None, ge=0.0)
+    """Optional SJF weight for prefill remaining tokens. When set, the SJF
+    penalty uses separate prefill and decode weights. Defaults to None to
+    preserve the legacy total-remaining behavior."""
+
+    mlfq_sjf_decode_weight: float | None = Field(default=None, ge=0.0)
+    """Optional SJF weight for decode remaining tokens. When set, the SJF
+    penalty uses separate prefill and decode weights. Defaults to None to
+    preserve the legacy total-remaining behavior."""
+
     mlfq_locality_weight: float = Field(default=0.0, ge=0.0)
     """Weight applied to prefix-cache locality boosts (per chunk)."""
+
+    mlfq_locality_max_boost: int = Field(default=0, ge=0)
+    """Maximum locality boost (in priority levels). Set to 0 to disable the
+    cap."""
 
     output_backpressure_pending_tokens: int = Field(default=0, ge=0)
     """Pending output token threshold to apply backpressure. Set to 0 to

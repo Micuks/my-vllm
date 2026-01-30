@@ -276,13 +276,30 @@ class Scheduler(SchedulerInterface):
         total_tokens = request.num_prompt_tokens + request.max_tokens
         return max(0, total_tokens - request.num_computed_tokens)
 
+    def _remaining_prefill_tokens(self, request: Request) -> int:
+        return max(0, request.num_prompt_tokens - request.num_computed_tokens)
+
+    def _remaining_decode_tokens(self, request: Request) -> int:
+        output_tokens = request.num_output_tokens + request.num_output_placeholders
+        return max(0, request.max_tokens - output_tokens)
+
     def _sjf_penalty(self, request: Request) -> int:
         chunk_size = self.scheduler_config.mlfq_sjf_token_chunk_size
         weight = self.scheduler_config.mlfq_sjf_weight
         if chunk_size <= 0 or weight <= 0:
             return 0
-        remaining = self._remaining_tokens(request)
-        return int((remaining // max(1, chunk_size)) * weight)
+        prefill_weight = self.scheduler_config.mlfq_sjf_prefill_weight
+        decode_weight = self.scheduler_config.mlfq_sjf_decode_weight
+        if prefill_weight is None and decode_weight is None:
+            remaining = self._remaining_tokens(request)
+            return int((remaining // max(1, chunk_size)) * weight)
+        prefill_w = weight if prefill_weight is None else prefill_weight
+        decode_w = weight if decode_weight is None else decode_weight
+        prefill = self._remaining_prefill_tokens(request)
+        decode = self._remaining_decode_tokens(request)
+        return int((prefill // max(1, chunk_size)) * prefill_w) + int(
+            (decode // max(1, chunk_size)) * decode_w
+        )
 
     def _locality_boost(self, request: Request) -> int:
         weight = self.scheduler_config.mlfq_locality_weight
@@ -290,7 +307,11 @@ class Scheduler(SchedulerInterface):
             return 0
         cached_tokens = max(0, request.num_cached_tokens)
         chunk_size = max(1, self.scheduler_config.mlfq_token_chunk_size)
-        return int((cached_tokens // chunk_size) * weight)
+        boost = int((cached_tokens // chunk_size) * weight)
+        max_boost = self.scheduler_config.mlfq_locality_max_boost
+        if max_boost > 0:
+            return min(boost, max_boost)
+        return boost
 
     def _backpressure_penalty(self, request: Request, timestamp: float) -> int:
         penalty = 0

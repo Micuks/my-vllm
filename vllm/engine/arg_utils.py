@@ -1147,8 +1147,20 @@ class EngineArgs:
             **scheduler_kwargs["mlfq_sjf_weight"],
         )
         scheduler_group.add_argument(
+            "--mlfq-sjf-prefill-weight",
+            **scheduler_kwargs["mlfq_sjf_prefill_weight"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-sjf-decode-weight",
+            **scheduler_kwargs["mlfq_sjf_decode_weight"],
+        )
+        scheduler_group.add_argument(
             "--mlfq-locality-weight",
             **scheduler_kwargs["mlfq_locality_weight"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-locality-max-boost",
+            **scheduler_kwargs["mlfq_locality_max_boost"],
         )
         scheduler_group.add_argument(
             "--output-backpressure-pending-tokens",

@@ -115,6 +115,24 @@ class SchedulerConfig:
     """Waiting-time aging interval (seconds) to boost priority and prevent
     starvation. Set to 0 to disable aging."""
 
+    mlfq_aging_dynamic_waiting_low: int = Field(default=0, ge=0)
+    """Waiting queue size at which aging scaling starts. Set to 0 to disable
+    dynamic aging."""
+
+    mlfq_aging_dynamic_waiting_high: int = Field(default=0, ge=0)
+    """Waiting queue size at which aging scaling reaches the max factor.
+    Must be greater than mlfq_aging_dynamic_waiting_low to enable scaling."""
+
+    mlfq_aging_dynamic_min_factor: float = Field(default=0.0, ge=0.0)
+    """Multiplier applied to aging steps at low waiting queue sizes."""
+
+    mlfq_aging_dynamic_max_factor: float = Field(default=0.0, ge=0.0)
+    """Multiplier applied to aging steps at high waiting queue sizes."""
+
+    mlfq_low_pressure_waiting_threshold: int = Field(default=0, ge=0)
+    """Waiting queue size at or below which the scheduler bypasses SJF, aging,
+    and locality boosts to match baseline behavior. Set to 0 to disable."""
+
     mlfq_waiting_budget_fraction: float = Field(default=0.2, ge=0.0, le=1.0)
     """Fraction of token budget reserved for waiting requests when priority
     scheduling is enabled. Improves short-request latency."""
@@ -135,6 +153,20 @@ class SchedulerConfig:
     """Optional SJF weight for decode remaining tokens. When set, the SJF
     penalty uses separate prefill and decode weights. Defaults to None to
     preserve the legacy total-remaining behavior."""
+
+    mlfq_sjf_dynamic_waiting_low: int = Field(default=0, ge=0)
+    """Waiting queue size at which SJF weight scaling starts. Set to 0 to
+    disable dynamic scaling."""
+
+    mlfq_sjf_dynamic_waiting_high: int = Field(default=0, ge=0)
+    """Waiting queue size at which SJF weight scaling reaches the max factor.
+    Must be greater than mlfq_sjf_dynamic_waiting_low to enable scaling."""
+
+    mlfq_sjf_dynamic_min_factor: float = Field(default=0.0, ge=0.0)
+    """Multiplier applied to SJF weights at low waiting queue sizes."""
+
+    mlfq_sjf_dynamic_max_factor: float = Field(default=0.0, ge=0.0)
+    """Multiplier applied to SJF weights at high waiting queue sizes."""
 
     mlfq_locality_weight: float = Field(default=0.0, ge=0.0)
     """Weight applied to prefix-cache locality boosts (per chunk)."""

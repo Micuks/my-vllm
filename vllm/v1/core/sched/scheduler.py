@@ -283,18 +283,67 @@ class Scheduler(SchedulerInterface):
         output_tokens = request.num_output_tokens + request.num_output_placeholders
         return max(0, request.max_tokens - output_tokens)
 
+    def _is_low_pressure(self) -> bool:
+        threshold = self.scheduler_config.mlfq_low_pressure_waiting_threshold
+        return threshold > 0 and len(self.waiting) <= threshold
+
+    def _sjf_dynamic_factor(self) -> float:
+        cfg = self.scheduler_config
+        low = cfg.mlfq_sjf_dynamic_waiting_low
+        high = cfg.mlfq_sjf_dynamic_waiting_high
+        min_factor = cfg.mlfq_sjf_dynamic_min_factor
+        max_factor = cfg.mlfq_sjf_dynamic_max_factor
+        if low <= 0 or high <= 0 or high <= low or max_factor <= 0:
+            return 1.0
+        waiting = len(self.waiting)
+        if waiting <= low:
+            return min_factor
+        if waiting >= high:
+            return max_factor
+        span = high - low
+        ratio = (waiting - low) / span
+        return min_factor + ratio * (max_factor - min_factor)
+
+    def _aging_dynamic_factor(self) -> float:
+        cfg = self.scheduler_config
+        low = cfg.mlfq_aging_dynamic_waiting_low
+        high = cfg.mlfq_aging_dynamic_waiting_high
+        min_factor = cfg.mlfq_aging_dynamic_min_factor
+        max_factor = cfg.mlfq_aging_dynamic_max_factor
+        if low <= 0 or high <= 0 or high <= low or max_factor <= 0:
+            return 1.0
+        waiting = len(self.waiting)
+        if waiting <= low:
+            return min_factor
+        if waiting >= high:
+            return max_factor
+        span = high - low
+        ratio = (waiting - low) / span
+        return min_factor + ratio * (max_factor - min_factor)
+
     def _sjf_penalty(self, request: Request) -> int:
         chunk_size = self.scheduler_config.mlfq_sjf_token_chunk_size
-        weight = self.scheduler_config.mlfq_sjf_weight
-        if chunk_size <= 0 or weight <= 0:
+        if chunk_size <= 0:
             return 0
+        factor = self._sjf_dynamic_factor()
+        if factor <= 0:
+            return 0
+        weight = self.scheduler_config.mlfq_sjf_weight * factor
         prefill_weight = self.scheduler_config.mlfq_sjf_prefill_weight
         decode_weight = self.scheduler_config.mlfq_sjf_decode_weight
         if prefill_weight is None and decode_weight is None:
+            if weight <= 0:
+                return 0
             remaining = self._remaining_tokens(request)
             return int((remaining // max(1, chunk_size)) * weight)
-        prefill_w = weight if prefill_weight is None else prefill_weight
-        decode_w = weight if decode_weight is None else decode_weight
+        prefill_w = (
+            weight if prefill_weight is None else prefill_weight * factor
+        )
+        decode_w = (
+            weight if decode_weight is None else decode_weight * factor
+        )
+        if prefill_w <= 0 and decode_w <= 0:
+            return 0
         prefill = self._remaining_prefill_tokens(request)
         decode = self._remaining_decode_tokens(request)
         return int((prefill // max(1, chunk_size)) * prefill_w) + int(
@@ -375,10 +424,17 @@ class Scheduler(SchedulerInterface):
         chunk_size = max(1, self.scheduler_config.mlfq_token_chunk_size)
         token_penalty = request.num_computed_tokens // chunk_size
         priority = base_priority + token_penalty
-        priority += self._sjf_penalty(request)
+        low_pressure = self._is_low_pressure()
+        if not low_pressure:
+            priority += self._sjf_penalty(request)
         priority += self._backpressure_penalty(request, timestamp)
-        priority -= self._locality_boost(request)
-        if include_aging and self.scheduler_config.mlfq_aging_seconds > 0:
+        if not low_pressure:
+            priority -= self._locality_boost(request)
+        if (
+            include_aging
+            and not low_pressure
+            and self.scheduler_config.mlfq_aging_seconds > 0
+        ):
             waiting_since = self.waiting_since.get(request.request_id)
             if waiting_since is not None:
                 age_steps = int(
@@ -386,7 +442,9 @@ class Scheduler(SchedulerInterface):
                     // self.scheduler_config.mlfq_aging_seconds
                 )
                 if age_steps > 0:
-                    priority -= age_steps
+                    age_factor = self._aging_dynamic_factor()
+                    if age_factor > 0:
+                        priority -= int(age_steps * age_factor)
         return priority
 
     def _apply_mlfq_priorities(self, timestamp: float) -> None:

@@ -440,15 +440,45 @@ class EngineArgs:
     long_prefill_token_threshold: int = SchedulerConfig.long_prefill_token_threshold
     mlfq_token_chunk_size: int = SchedulerConfig.mlfq_token_chunk_size
     mlfq_aging_seconds: float = SchedulerConfig.mlfq_aging_seconds
+    mlfq_aging_dynamic_waiting_low: int = (
+        SchedulerConfig.mlfq_aging_dynamic_waiting_low
+    )
+    mlfq_aging_dynamic_waiting_high: int = (
+        SchedulerConfig.mlfq_aging_dynamic_waiting_high
+    )
+    mlfq_aging_dynamic_min_factor: float = (
+        SchedulerConfig.mlfq_aging_dynamic_min_factor
+    )
+    mlfq_aging_dynamic_max_factor: float = (
+        SchedulerConfig.mlfq_aging_dynamic_max_factor
+    )
+    mlfq_low_pressure_waiting_threshold: int = (
+        SchedulerConfig.mlfq_low_pressure_waiting_threshold
+    )
     mlfq_waiting_budget_fraction: float = SchedulerConfig.mlfq_waiting_budget_fraction
     mlfq_sjf_token_chunk_size: int = SchedulerConfig.mlfq_sjf_token_chunk_size
     mlfq_sjf_weight: float = SchedulerConfig.mlfq_sjf_weight
+    mlfq_sjf_prefill_weight: float | None = SchedulerConfig.mlfq_sjf_prefill_weight
+    mlfq_sjf_decode_weight: float | None = SchedulerConfig.mlfq_sjf_decode_weight
+    mlfq_sjf_dynamic_waiting_low: int = (
+        SchedulerConfig.mlfq_sjf_dynamic_waiting_low
+    )
+    mlfq_sjf_dynamic_waiting_high: int = (
+        SchedulerConfig.mlfq_sjf_dynamic_waiting_high
+    )
+    mlfq_sjf_dynamic_min_factor: float = (
+        SchedulerConfig.mlfq_sjf_dynamic_min_factor
+    )
+    mlfq_sjf_dynamic_max_factor: float = (
+        SchedulerConfig.mlfq_sjf_dynamic_max_factor
+    )
     mlfq_locality_weight: float = SchedulerConfig.mlfq_locality_weight
     output_backpressure_pending_tokens: int = (
         SchedulerConfig.output_backpressure_pending_tokens
     )
     output_backpressure_penalty: int = SchedulerConfig.output_backpressure_penalty
     output_backpressure_max_tokens: int = SchedulerConfig.output_backpressure_max_tokens
+    output_backpressure_min_tokens: int = SchedulerConfig.output_backpressure_min_tokens
     output_backpressure_lag_seconds: float = (
         SchedulerConfig.output_backpressure_lag_seconds
     )
@@ -1135,6 +1165,26 @@ class EngineArgs:
             "--mlfq-aging-seconds", **scheduler_kwargs["mlfq_aging_seconds"]
         )
         scheduler_group.add_argument(
+            "--mlfq-aging-dynamic-waiting-low",
+            **scheduler_kwargs["mlfq_aging_dynamic_waiting_low"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-aging-dynamic-waiting-high",
+            **scheduler_kwargs["mlfq_aging_dynamic_waiting_high"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-aging-dynamic-min-factor",
+            **scheduler_kwargs["mlfq_aging_dynamic_min_factor"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-aging-dynamic-max-factor",
+            **scheduler_kwargs["mlfq_aging_dynamic_max_factor"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-low-pressure-waiting-threshold",
+            **scheduler_kwargs["mlfq_low_pressure_waiting_threshold"],
+        )
+        scheduler_group.add_argument(
             "--mlfq-waiting-budget-fraction",
             **scheduler_kwargs["mlfq_waiting_budget_fraction"],
         )
@@ -1145,6 +1195,22 @@ class EngineArgs:
         scheduler_group.add_argument(
             "--mlfq-sjf-weight",
             **scheduler_kwargs["mlfq_sjf_weight"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-sjf-dynamic-waiting-low",
+            **scheduler_kwargs["mlfq_sjf_dynamic_waiting_low"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-sjf-dynamic-waiting-high",
+            **scheduler_kwargs["mlfq_sjf_dynamic_waiting_high"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-sjf-dynamic-min-factor",
+            **scheduler_kwargs["mlfq_sjf_dynamic_min_factor"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-sjf-dynamic-max-factor",
+            **scheduler_kwargs["mlfq_sjf_dynamic_max_factor"],
         )
         scheduler_group.add_argument(
             "--mlfq-sjf-prefill-weight",
@@ -1725,13 +1791,27 @@ class EngineArgs:
             long_prefill_token_threshold=self.long_prefill_token_threshold,
             mlfq_token_chunk_size=self.mlfq_token_chunk_size,
             mlfq_aging_seconds=self.mlfq_aging_seconds,
+            mlfq_aging_dynamic_waiting_low=self.mlfq_aging_dynamic_waiting_low,
+            mlfq_aging_dynamic_waiting_high=self.mlfq_aging_dynamic_waiting_high,
+            mlfq_aging_dynamic_min_factor=self.mlfq_aging_dynamic_min_factor,
+            mlfq_aging_dynamic_max_factor=self.mlfq_aging_dynamic_max_factor,
+            mlfq_low_pressure_waiting_threshold=(
+                self.mlfq_low_pressure_waiting_threshold
+            ),
             mlfq_waiting_budget_fraction=self.mlfq_waiting_budget_fraction,
             mlfq_sjf_token_chunk_size=self.mlfq_sjf_token_chunk_size,
             mlfq_sjf_weight=self.mlfq_sjf_weight,
+            mlfq_sjf_prefill_weight=self.mlfq_sjf_prefill_weight,
+            mlfq_sjf_decode_weight=self.mlfq_sjf_decode_weight,
+            mlfq_sjf_dynamic_waiting_low=self.mlfq_sjf_dynamic_waiting_low,
+            mlfq_sjf_dynamic_waiting_high=self.mlfq_sjf_dynamic_waiting_high,
+            mlfq_sjf_dynamic_min_factor=self.mlfq_sjf_dynamic_min_factor,
+            mlfq_sjf_dynamic_max_factor=self.mlfq_sjf_dynamic_max_factor,
             mlfq_locality_weight=self.mlfq_locality_weight,
             output_backpressure_pending_tokens=self.output_backpressure_pending_tokens,
             output_backpressure_penalty=self.output_backpressure_penalty,
             output_backpressure_max_tokens=self.output_backpressure_max_tokens,
+            output_backpressure_min_tokens=self.output_backpressure_min_tokens,
             output_backpressure_lag_seconds=self.output_backpressure_lag_seconds,
             output_backpressure_update_interval_s=(
                 self.output_backpressure_update_interval_s

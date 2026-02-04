@@ -137,6 +137,30 @@ class SchedulerConfig:
     """Fraction of token budget reserved for waiting requests when priority
     scheduling is enabled. Improves short-request latency."""
 
+    mlfq_phase_rps_baseline_max: float = Field(default=0.0, ge=0.0)
+    """Max RPS (EMA) for baseline phase. Set to 0 to disable RPS-based phases."""
+
+    mlfq_phase_rps_las_max: float = Field(default=0.0, ge=0.0)
+    """Max RPS (EMA) for LAS phase. Above this uses aging-SJF."""
+
+    mlfq_phase_rps_window_s: float = Field(default=1.0, gt=0.0)
+    """Time window (seconds) for RPS estimation."""
+
+    mlfq_phase_rps_ema_alpha: float = Field(default=0.2, gt=0.0, le=1.0)
+    """EMA alpha for RPS smoothing (0 < alpha <= 1)."""
+
+    mlfq_phase_rps_hysteresis: float = Field(default=0.0, ge=0.0)
+    """Hysteresis for phase transitions (RPS)."""
+
+    mlfq_phase_min_seconds: float = Field(default=1.0, ge=0.0)
+    """Minimum dwell time before switching phases."""
+
+    mlfq_las_token_chunk_size: int = Field(default=0, ge=0)
+    """Token chunk size used for LAS penalties. Set to 0 to disable LAS."""
+
+    mlfq_las_weight: float = Field(default=0.0, ge=0.0)
+    """Weight applied to the LAS penalty (per chunk of computed tokens)."""
+
     mlfq_sjf_token_chunk_size: int = Field(default=0, ge=0)
     """Token chunk size used for SJF penalties. Set to 0 to disable SJF
     adjustments."""

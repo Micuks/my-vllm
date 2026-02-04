@@ -158,6 +158,10 @@ class Scheduler(SchedulerInterface):
         self.waiting = create_request_queue(self.policy)
         self.running: list[Request] = []
         self.waiting_since: dict[str, float] = {}
+        self._rps_arrivals: deque[float] = deque()
+        self._rps_ema: float | None = None
+        self._rps_phase: str | None = None
+        self._rps_phase_last_switch: float = 0.0
 
         # The request IDs that are finished in between the previous and the
         # current steps. This is used to notify the workers about the finished
@@ -283,6 +287,59 @@ class Scheduler(SchedulerInterface):
         output_tokens = request.num_output_tokens + request.num_output_placeholders
         return max(0, request.max_tokens - output_tokens)
 
+    def _rps_phase_enabled(self) -> bool:
+        cfg = self.scheduler_config
+        return (
+            cfg.mlfq_phase_rps_baseline_max > 0
+            and cfg.mlfq_phase_rps_las_max > 0
+            and cfg.mlfq_phase_rps_las_max > cfg.mlfq_phase_rps_baseline_max
+        )
+
+    def _record_arrival(self, timestamp: float) -> None:
+        cfg = self.scheduler_config
+        if not self._rps_phase_enabled():
+            return
+        window = cfg.mlfq_phase_rps_window_s
+        self._rps_arrivals.append(timestamp)
+        cutoff = timestamp - window
+        while self._rps_arrivals and self._rps_arrivals[0] < cutoff:
+            self._rps_arrivals.popleft()
+        current_rps = len(self._rps_arrivals) / window
+        alpha = cfg.mlfq_phase_rps_ema_alpha
+        if self._rps_ema is None:
+            self._rps_ema = current_rps
+        else:
+            self._rps_ema = alpha * current_rps + (1 - alpha) * self._rps_ema
+        self._update_rps_phase(timestamp)
+
+    def _update_rps_phase(self, timestamp: float) -> None:
+        if self._rps_ema is None:
+            return
+        cfg = self.scheduler_config
+        hysteresis = cfg.mlfq_phase_rps_hysteresis
+        baseline_max = cfg.mlfq_phase_rps_baseline_max
+        las_max = cfg.mlfq_phase_rps_las_max
+        phase = self._rps_phase or "baseline"
+        if cfg.mlfq_phase_min_seconds > 0 and self._rps_phase_last_switch > 0:
+            if (timestamp - self._rps_phase_last_switch) < cfg.mlfq_phase_min_seconds:
+                self._rps_phase = phase
+                return
+        rps = self._rps_ema
+        if phase == "baseline":
+            if rps > baseline_max + hysteresis:
+                phase = "las"
+        elif phase == "las":
+            if rps < baseline_max - hysteresis:
+                phase = "baseline"
+            elif rps > las_max + hysteresis:
+                phase = "aging-sjf"
+        else:
+            if rps < las_max - hysteresis:
+                phase = "las"
+        if phase != self._rps_phase:
+            self._rps_phase = phase
+            self._rps_phase_last_switch = timestamp
+
     def _is_low_pressure(self) -> bool:
         threshold = self.scheduler_config.mlfq_low_pressure_waiting_threshold
         return threshold > 0 and len(self.waiting) <= threshold
@@ -320,6 +377,16 @@ class Scheduler(SchedulerInterface):
         span = high - low
         ratio = (waiting - low) / span
         return min_factor + ratio * (max_factor - min_factor)
+
+    def _las_penalty(self, request: Request) -> int:
+        chunk_size = self.scheduler_config.mlfq_las_token_chunk_size
+        if chunk_size <= 0:
+            return 0
+        weight = self.scheduler_config.mlfq_las_weight
+        if weight <= 0:
+            return 0
+        attained = request.num_computed_tokens
+        return int((attained // max(1, chunk_size)) * weight)
 
     def _sjf_penalty(self, request: Request) -> int:
         chunk_size = self.scheduler_config.mlfq_sjf_token_chunk_size
@@ -420,19 +487,49 @@ class Scheduler(SchedulerInterface):
         *,
         include_aging: bool,
     ) -> int:
+        phase = (
+            (self._rps_phase or "baseline")
+            if self._rps_phase_enabled()
+            else None
+        )
+        enable_las = True
+        enable_sjf = True
+        enable_locality = True
+        enable_aging = include_aging
+        if phase == "baseline":
+            enable_las = False
+            enable_sjf = False
+            enable_locality = False
+            enable_aging = False
+        elif phase == "las":
+            enable_las = True
+            enable_sjf = False
+            enable_locality = False
+            enable_aging = False
+        elif phase == "aging-sjf":
+            enable_las = False
+            enable_sjf = True
+            enable_locality = True
+            enable_aging = include_aging
         base_priority = getattr(request, "base_priority", request.priority)
         chunk_size = max(1, self.scheduler_config.mlfq_token_chunk_size)
         token_penalty = request.num_computed_tokens // chunk_size
         priority = base_priority + token_penalty
         low_pressure = self._is_low_pressure()
-        if not low_pressure:
+        if low_pressure:
+            enable_las = False
+            enable_sjf = False
+            enable_locality = False
+            enable_aging = False
+        if enable_las:
+            priority += self._las_penalty(request)
+        if enable_sjf:
             priority += self._sjf_penalty(request)
         priority += self._backpressure_penalty(request, timestamp)
-        if not low_pressure:
+        if enable_locality:
             priority -= self._locality_boost(request)
         if (
-            include_aging
-            and not low_pressure
+            enable_aging
             and self.scheduler_config.mlfq_aging_seconds > 0
         ):
             waiting_since = self.waiting_since.get(request.request_id)
@@ -1952,6 +2049,7 @@ class Scheduler(SchedulerInterface):
                 request.streaming_queue = deque()
             self.waiting.add_request(request)
             self._mark_waiting(request)
+            self._record_arrival(time.monotonic())
             self.requests[request.request_id] = request
             if self.log_stats:
                 request.record_event(EngineCoreEventType.QUEUED)

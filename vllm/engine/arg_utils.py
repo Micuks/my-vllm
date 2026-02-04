@@ -456,6 +456,14 @@ class EngineArgs:
         SchedulerConfig.mlfq_low_pressure_waiting_threshold
     )
     mlfq_waiting_budget_fraction: float = SchedulerConfig.mlfq_waiting_budget_fraction
+    mlfq_phase_rps_baseline_max: float = SchedulerConfig.mlfq_phase_rps_baseline_max
+    mlfq_phase_rps_las_max: float = SchedulerConfig.mlfq_phase_rps_las_max
+    mlfq_phase_rps_window_s: float = SchedulerConfig.mlfq_phase_rps_window_s
+    mlfq_phase_rps_ema_alpha: float = SchedulerConfig.mlfq_phase_rps_ema_alpha
+    mlfq_phase_rps_hysteresis: float = SchedulerConfig.mlfq_phase_rps_hysteresis
+    mlfq_phase_min_seconds: float = SchedulerConfig.mlfq_phase_min_seconds
+    mlfq_las_token_chunk_size: int = SchedulerConfig.mlfq_las_token_chunk_size
+    mlfq_las_weight: float = SchedulerConfig.mlfq_las_weight
     mlfq_sjf_token_chunk_size: int = SchedulerConfig.mlfq_sjf_token_chunk_size
     mlfq_sjf_weight: float = SchedulerConfig.mlfq_sjf_weight
     mlfq_sjf_prefill_weight: float | None = SchedulerConfig.mlfq_sjf_prefill_weight
@@ -1189,6 +1197,38 @@ class EngineArgs:
             **scheduler_kwargs["mlfq_waiting_budget_fraction"],
         )
         scheduler_group.add_argument(
+            "--mlfq-phase-rps-baseline-max",
+            **scheduler_kwargs["mlfq_phase_rps_baseline_max"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-phase-rps-las-max",
+            **scheduler_kwargs["mlfq_phase_rps_las_max"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-phase-rps-window-s",
+            **scheduler_kwargs["mlfq_phase_rps_window_s"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-phase-rps-ema-alpha",
+            **scheduler_kwargs["mlfq_phase_rps_ema_alpha"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-phase-rps-hysteresis",
+            **scheduler_kwargs["mlfq_phase_rps_hysteresis"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-phase-min-seconds",
+            **scheduler_kwargs["mlfq_phase_min_seconds"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-las-token-chunk-size",
+            **scheduler_kwargs["mlfq_las_token_chunk_size"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-las-weight",
+            **scheduler_kwargs["mlfq_las_weight"],
+        )
+        scheduler_group.add_argument(
             "--mlfq-sjf-token-chunk-size",
             **scheduler_kwargs["mlfq_sjf_token_chunk_size"],
         )
@@ -1799,6 +1839,14 @@ class EngineArgs:
                 self.mlfq_low_pressure_waiting_threshold
             ),
             mlfq_waiting_budget_fraction=self.mlfq_waiting_budget_fraction,
+            mlfq_phase_rps_baseline_max=self.mlfq_phase_rps_baseline_max,
+            mlfq_phase_rps_las_max=self.mlfq_phase_rps_las_max,
+            mlfq_phase_rps_window_s=self.mlfq_phase_rps_window_s,
+            mlfq_phase_rps_ema_alpha=self.mlfq_phase_rps_ema_alpha,
+            mlfq_phase_rps_hysteresis=self.mlfq_phase_rps_hysteresis,
+            mlfq_phase_min_seconds=self.mlfq_phase_min_seconds,
+            mlfq_las_token_chunk_size=self.mlfq_las_token_chunk_size,
+            mlfq_las_weight=self.mlfq_las_weight,
             mlfq_sjf_token_chunk_size=self.mlfq_sjf_token_chunk_size,
             mlfq_sjf_weight=self.mlfq_sjf_weight,
             mlfq_sjf_prefill_weight=self.mlfq_sjf_prefill_weight,

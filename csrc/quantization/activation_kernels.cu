@@ -12,6 +12,16 @@
 #include <c10/util/Float8_e4m3fn.h>
 
 #ifndef USE_ROCM
+  #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    #define VLLM_BF16_NATIVE_MATH 1
+  #else
+    #define VLLM_BF16_NATIVE_MATH 0
+  #endif
+#else
+  #define VLLM_BF16_NATIVE_MATH 1
+#endif
+
+#ifndef USE_ROCM
   #include <cuda_bf16.h>
   #include <cuda_fp16.h>
   #include <cuda_fp8.h>
@@ -35,6 +45,119 @@ typedef __hip_fp8x4_e4m3_fnuz __nv_fp8x4_e4m3;
 
 #include "core/registration.h"
 namespace vllm {
+
+#ifndef USE_ROCM
+__device__ __forceinline__ __nv_bfloat16 vllm_bf16_from_float(float v) {
+  return __float2bfloat16_rn(v);
+}
+
+__device__ __forceinline__ float vllm_bf16_to_float(__nv_bfloat16 v) {
+  return __bfloat162float(v);
+}
+
+__device__ __forceinline__ __nv_bfloat162 vllm_bf162_from_floats(float x,
+                                                                 float y) {
+  return __floats2bfloat162_rn(x, y);
+}
+
+__device__ __forceinline__ __nv_bfloat162 vllm_bf162_from_bf16(
+    __nv_bfloat16 v) {
+#if VLLM_BF16_NATIVE_MATH
+  return __bfloat162bfloat162(v);
+#else
+  const float f = vllm_bf16_to_float(v);
+  return vllm_bf162_from_floats(f, f);
+#endif
+}
+
+__device__ __forceinline__ float2 vllm_bf162_to_float2(__nv_bfloat162 v) {
+#if VLLM_BF16_NATIVE_MATH
+  return __bfloat1622float2(v);
+#else
+  return make_float2(__low2float(v), __high2float(v));
+#endif
+}
+
+__device__ __forceinline__ __nv_bfloat16 vllm_bf16_max(__nv_bfloat16 a,
+                                                       __nv_bfloat16 b) {
+#if VLLM_BF16_NATIVE_MATH
+  return __hmax(a, b);
+#else
+  return vllm_bf16_from_float(fmaxf(vllm_bf16_to_float(a),
+                                    vllm_bf16_to_float(b)));
+#endif
+}
+
+__device__ __forceinline__ __nv_bfloat16 vllm_bf16_min(__nv_bfloat16 a,
+                                                       __nv_bfloat16 b) {
+#if VLLM_BF16_NATIVE_MATH
+  return __hmin(a, b);
+#else
+  return vllm_bf16_from_float(fminf(vllm_bf16_to_float(a),
+                                    vllm_bf16_to_float(b)));
+#endif
+}
+
+__device__ __forceinline__ __nv_bfloat16 vllm_bf16_mul(__nv_bfloat16 a,
+                                                       __nv_bfloat16 b) {
+#if VLLM_BF16_NATIVE_MATH
+  return __hmul(a, b);
+#else
+  return vllm_bf16_from_float(vllm_bf16_to_float(a) * vllm_bf16_to_float(b));
+#endif
+}
+
+__device__ __forceinline__ __nv_bfloat16 vllm_bf16_div(__nv_bfloat16 a,
+                                                       __nv_bfloat16 b) {
+#if VLLM_BF16_NATIVE_MATH
+  return __hdiv(a, b);
+#else
+  return vllm_bf16_from_float(vllm_bf16_to_float(a) / vllm_bf16_to_float(b));
+#endif
+}
+
+__device__ __forceinline__ __nv_bfloat162 vllm_bf162_max(__nv_bfloat162 a,
+                                                         __nv_bfloat162 b) {
+#if VLLM_BF16_NATIVE_MATH
+  return __hmax2(a, b);
+#else
+  const float2 af = vllm_bf162_to_float2(a);
+  const float2 bf = vllm_bf162_to_float2(b);
+  return vllm_bf162_from_floats(fmaxf(af.x, bf.x), fmaxf(af.y, bf.y));
+#endif
+}
+
+__device__ __forceinline__ __nv_bfloat162 vllm_bf162_min(__nv_bfloat162 a,
+                                                         __nv_bfloat162 b) {
+#if VLLM_BF16_NATIVE_MATH
+  return __hmin2(a, b);
+#else
+  const float2 af = vllm_bf162_to_float2(a);
+  const float2 bf = vllm_bf162_to_float2(b);
+  return vllm_bf162_from_floats(fminf(af.x, bf.x), fminf(af.y, bf.y));
+#endif
+}
+
+__device__ __forceinline__ __nv_bfloat162 vllm_bf162_mul(__nv_bfloat162 a,
+                                                         __nv_bfloat162 b) {
+#if VLLM_BF16_NATIVE_MATH
+  return __hmul2(a, b);
+#else
+  const float2 af = vllm_bf162_to_float2(a);
+  const float2 bf = vllm_bf162_to_float2(b);
+  return vllm_bf162_from_floats(af.x * bf.x, af.y * bf.y);
+#endif
+}
+
+__device__ __forceinline__ __nv_bfloat162 vllm_bf162_abs(__nv_bfloat162 v) {
+#if VLLM_BF16_NATIVE_MATH
+  return __habs2(v);
+#else
+  const float2 vf = vllm_bf162_to_float2(v);
+  return vllm_bf162_from_floats(fabsf(vf.x), fabsf(vf.y));
+#endif
+}
+#endif  // !USE_ROCM
 
 template <typename T>
 __device__ __forceinline__ T silu_kernel(const T& x) {
@@ -123,8 +246,7 @@ __device__ __forceinline__ float2 silu2(float2 x) {
 
 __device__ __forceinline__ __nv_bfloat162 silu2_v2(float2 x) {
 #ifndef USE_ROCM
-  return make_bfloat162(__float2bfloat16_rn(silu(x.x)),
-                        __float2bfloat16_rn(silu(x.y)));
+  return vllm_bf162_from_floats(silu(x.x), silu(x.y));
 #else
   return __float22bfloat162_rn(make_float2(silu(x.x), silu(x.y)));
 #endif
@@ -142,7 +264,7 @@ __device__ __forceinline__ float warp_max(float v) {
 __device__ __forceinline__ __nv_bfloat16 warp_max(__nv_bfloat16 v) {
   static constexpr unsigned FULL_MASK = 0xffffffffu;
   for (int offset = 1; offset < WARP_SIZE; offset *= 2) {
-    v = __hmax(v, __shfl_xor_sync(FULL_MASK, v, offset));
+    v = vllm_bf16_max(v, __shfl_xor_sync(FULL_MASK, v, offset));
   }
   return v;
 }
@@ -198,13 +320,21 @@ __device__ __forceinline__ float clip(float v, float mmin, float mmax) {
 __device__ __forceinline__ __nv_bfloat16 clip(__nv_bfloat16 v,
                                               __nv_bfloat16 mmin,
                                               __nv_bfloat16 mmax) {
+#ifndef USE_ROCM
+  return vllm_bf16_min(mmax, vllm_bf16_max(v, mmin));
+#else
   return __hmin(mmax, __hmax(v, mmin));
+#endif
 }
 
 __device__ __forceinline__ __nv_bfloat162 clip(__nv_bfloat162 v,
                                                __nv_bfloat162 mmin,
                                                __nv_bfloat162 mmax) {
+#ifndef USE_ROCM
+  return vllm_bf162_min(mmax, vllm_bf162_max(v, mmin));
+#else
   return __hmin2(mmax, __hmax2(v, mmin));
+#endif
 }
 
 // We use the following values for fp8 min/max:
@@ -304,10 +434,16 @@ __global__ void silu_mul_fp8_quant_deep_gemm_kernel(
   int* s_expert_offsets =
       reinterpret_cast<int*>(smem_128 + (SMEM_SIZE_BYTES_Y / 16));
 
+#if !defined(USE_ROCM) && VLLM_BF16_NATIVE_MATH
   static constexpr __nv_bfloat16 fp8_min = get_fp8_min<fp8_type>();
   static constexpr __nv_bfloat16 fp8_max = get_fp8_max<fp8_type>();
   // We assign EPS with it's 16-bit unsigned counterpart to allow constexpr.
   static constexpr __nv_bfloat16 EPS = (__nv_bfloat16_raw{.x = 11996});
+#else
+  const __nv_bfloat16 fp8_min = get_fp8_min<fp8_type>();
+  const __nv_bfloat16 fp8_max = get_fp8_max<fp8_type>();
+  const __nv_bfloat16 EPS = (__nv_bfloat16_raw{.x = 11996});
+#endif
   int tid = threadIdx.x;
   int warp_id = tid >> 5;
   int lane_id = tid & 0x1f;
@@ -354,11 +490,21 @@ __global__ void silu_mul_fp8_quant_deep_gemm_kernel(
   __int128_t* s_hidden_load = smem_128 + warp_id * ((2 * 128 / 8) * NUM_STAGES);
   __int128_t* smem_load_ptr = s_hidden_load + lane_id;
 
-  const __nv_bfloat16 fp8_inv = __hdiv(__float2bfloat16(1.f), fp8_max);
+  const __nv_bfloat16 fp8_inv =
+#ifndef USE_ROCM
+      vllm_bf16_div(vllm_bf16_from_float(1.f), fp8_max);
+#else
+      __hdiv(__float2bfloat16(1.f), fp8_max);
+#endif
 
   int32_t compute_pipeline_offset_64 = 0;
   int32_t load_stage_offset{};
-  const __nv_bfloat16 one_bf16 = __float2bfloat16_rn(1.f);
+  const __nv_bfloat16 one_bf16 =
+#ifndef USE_ROCM
+      vllm_bf16_from_float(1.f);
+#else
+      __float2bfloat16_rn(1.f);
+#endif
 
   __int64_t* smem_compute_ptr = reinterpret_cast<__int64_t*>(smem_128) +
                                 warp_id * (2 * (GROUP_SIZE / 4) * NUM_STAGES) +
@@ -512,28 +658,78 @@ __global__ void silu_mul_fp8_quant_deep_gemm_kernel(
 
   #pragma unroll
       for (int32_t k = 0; k < 2; ++k) {
-        __nv_bfloat162 gate = silu2_v2(__bfloat1622float2(s_gate_comp[k]));
+        __nv_bfloat162 gate =
+#ifndef USE_ROCM
+            silu2_v2(vllm_bf162_to_float2(s_gate_comp[k]));
+#else
+            silu2_v2(__bfloat1622float2(s_gate_comp[k]));
+#endif
+#ifndef USE_ROCM
+        res[k] = vllm_bf162_mul(gate, s_up_comp[k]);
+#else
         res[k] = __hmul2(gate, s_up_comp[k]);
+#endif
       }
 
-      auto _y_max2 = __hmax2(__habs2(res[0]), __habs2(res[1]));
+      auto _y_max2 =
+#ifndef USE_ROCM
+          vllm_bf162_max(vllm_bf162_abs(res[0]), vllm_bf162_abs(res[1]));
+#else
+          __hmax2(__habs2(res[0]), __habs2(res[1]));
+#endif
 
-      _y_max2.x = __hmax(__hmax(_y_max2.x, _y_max2.y), EPS);
+      _y_max2.x =
+#ifndef USE_ROCM
+          vllm_bf16_max(vllm_bf16_max(_y_max2.x, _y_max2.y), EPS);
+#else
+          __hmax(__hmax(_y_max2.x, _y_max2.y), EPS);
+#endif
 
-      __nv_bfloat16 y_s = __hmul(warp_max(_y_max2.x), fp8_inv);
+      __nv_bfloat16 y_s =
+#ifndef USE_ROCM
+          vllm_bf16_mul(warp_max(_y_max2.x), fp8_inv);
+#else
+          __hmul(warp_max(_y_max2.x), fp8_inv);
+#endif
 
       if constexpr (CEIL_UE8M0) {
+#ifndef USE_ROCM
+  #if VLLM_BF16_NATIVE_MATH
         y_s = hexp2(hceil(hlog2(y_s)));
+  #else
+        const float y_f = vllm_bf16_to_float(y_s);
+        y_s = vllm_bf16_from_float(exp2f(ceilf(log2f(y_f))));
+  #endif
+#else
+        y_s = hexp2(hceil(hlog2(y_s)));
+#endif
       }
 
-      __nv_bfloat16 inv_y = __hdiv(one_bf16, y_s);
+      __nv_bfloat16 inv_y =
+#ifndef USE_ROCM
+          vllm_bf16_div(one_bf16, y_s);
+#else
+          __hdiv(one_bf16, y_s);
+#endif
 
-      auto y_s2 = make_bfloat162(inv_y, inv_y);
+      auto y_s2 =
+#ifndef USE_ROCM
+          vllm_bf162_from_bf16(inv_y);
+#else
+          make_bfloat162(inv_y, inv_y);
+#endif
 
   #pragma unroll
       for (int32_t k = 0; k < 2; ++k) {
-        res[k] = clip(__hmul2(res[k], y_s2), __bfloat162bfloat162(fp8_min),
-                      __bfloat162bfloat162(fp8_max));
+        res[k] =
+#ifndef USE_ROCM
+            clip(vllm_bf162_mul(res[k], y_s2),
+                 vllm_bf162_from_bf16(fp8_min),
+                 vllm_bf162_from_bf16(fp8_max));
+#else
+            clip(__hmul2(res[k], y_s2), __bfloat162bfloat162(fp8_min),
+                 __bfloat162bfloat162(fp8_max));
+#endif
       }
 
       *y_q_ptr = __nv_fp8x4_e4m3(res[0], res[1]);

@@ -39,6 +39,16 @@
 namespace vllm {
 namespace moe {
 
+__device__ __forceinline__ float2 vllm_bf162_to_float2(__nv_bfloat162 value) {
+#if defined(USE_ROCM)
+    return __bfloat1622float2(value);
+#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    return __bfloat1622float2(value);
+#else
+    return make_float2(__low2float(value), __high2float(value));
+#endif
+}
+
 /// Aligned array type
 template <
     typename T,
@@ -353,7 +363,7 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE_PARAM) __global__
                 int base_idx_f2 = ii * ELTS_PER_LDG / 2;
 #pragma unroll
                 for (int jj = 0; jj < ELTS_PER_LDG / 2; ++jj) {
-                    row_chunk_f2[base_idx_f2 + jj] = __bfloat1622float2(
+                    row_chunk_f2[base_idx_f2 + jj] = vllm_bf162_to_float2(
                         *reinterpret_cast<const __nv_bfloat162*>(vec.data + jj * 2)
                     );
                 }

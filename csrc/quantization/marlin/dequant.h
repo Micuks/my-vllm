@@ -68,6 +68,11 @@ where `scale_factor * multiplier` can be computed at weight loading.
 namespace MARLIN_NAMESPACE_NAME {
 
 #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 750
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+#define MARLIN_BF16_SUPPORTED 1
+#else
+#define MARLIN_BF16_SUPPORTED 0
+#endif
 // Lookup-table based 3-input logical operation; explicitly used for
 // dequantization as the compiler does not seem to automatically recognize it in
 // all cases.
@@ -170,6 +175,7 @@ __device__ inline void dequant<half2, vllm::kU4.id(), false>(int q,
                       *reinterpret_cast<const half2*>(&ADD));
 }
 
+#if MARLIN_BF16_SUPPORTED
 template <>
 __device__ inline void dequant<nv_bfloat162, vllm::kU4B8.id(), true>(
     int q, nv_bfloat162* frag_b) {
@@ -214,6 +220,7 @@ __device__ inline void dequant<nv_bfloat162, vllm::kU4.id(), false>(
   frag_b[0] = __hsub2(frag_b[0], *reinterpret_cast<const nv_bfloat162*>(&SUB));
   frag_b[1] = __hsub2(frag_b[1], *reinterpret_cast<const nv_bfloat162*>(&SUB));
 }
+#endif
 
 //
 // Fast Int8ToFp16/Int8ToBf16: Efficiently dequantize 8bit int values to fp16 or
@@ -267,6 +274,7 @@ __device__ inline void dequant<half2, vllm::kU8.id(), false>(int q,
                       *reinterpret_cast<const half2*>(&I8s_TO_F16s_MAGIC_NUM));
 }
 
+#if MARLIN_BF16_SUPPORTED
 template <>
 __device__ inline void dequant<nv_bfloat162, vllm::kU8B128.id(), false>(
     int q, nv_bfloat162* frag_b) {
@@ -316,6 +324,7 @@ __device__ inline void dequant<nv_bfloat162, vllm::kU8.id(), false>(
   bf16_result_ptr[1] = __byte_perm(fp32_intermediates_casted[2],
                                    fp32_intermediates_casted[3], 0x7632);
 }
+#endif
 
 template <>
 __device__ inline void dequant<half2, vllm::kFE4M3fn.id(), true>(
@@ -353,6 +362,7 @@ __device__ inline void dequant<half2, vllm::kFE4M3fn.id(), false>(
   frag_b[0] = __hmul2(frag_b[0], bias_reg);
 }
 
+#if MARLIN_BF16_SUPPORTED
 template <>
 __device__ inline void dequant<nv_bfloat162, vllm::kFE4M3fn.id(), true>(
     int q, nv_bfloat162* frag_b) {
@@ -393,6 +403,7 @@ __device__ inline void dequant<nv_bfloat162, vllm::kFE4M3fn.id(), false>(
   frag_b[1] = __hmul2(frag_b[1], bias_reg);
   frag_b[0] = __hmul2(frag_b[0], bias_reg);
 }
+#endif
 
 template <>
 __device__ inline void dequant<half2, vllm::kFE2M1f.id(), true>(int q,
@@ -430,6 +441,7 @@ __device__ inline void dequant<half2, vllm::kFE2M1f.id(), false>(
   frag_b[0] = __hmul2(frag_b[0], bias_reg);
 }
 
+#if MARLIN_BF16_SUPPORTED
 template <>
 __device__ inline void dequant<nv_bfloat162, vllm::kFE2M1f.id(), true>(
     int q, nv_bfloat162* frag_b) {
@@ -469,6 +481,7 @@ __device__ inline void dequant<nv_bfloat162, vllm::kFE2M1f.id(), false>(
   frag_b[1] = __hmul2(frag_b[1], bias_reg);
   frag_b[0] = __hmul2(frag_b[0], bias_reg);
 }
+#endif
 
 template <>
 __device__ inline void dequant<__nv_fp8x4_e4m3, vllm::kFE2M1f.id(), true>(
@@ -530,6 +543,7 @@ __device__ inline void dequant_fp8_scales<half2, vllm::kFE4M3fn.id()>(
   frag_b[0] = *reinterpret_cast<const half2*>(&Out2);
 };
 
+#if MARLIN_BF16_SUPPORTED
 template <>
 __device__ inline void dequant_fp8_scales<nv_bfloat162, vllm::kFE4M3fn.id()>(
     int q, nv_bfloat162* frag_b) {
@@ -560,6 +574,7 @@ __device__ inline void dequant_fp8_scales<nv_bfloat162, vllm::kFE8M0fnu.id()>(
   frag_b[1] = *reinterpret_cast<const nv_bfloat162*>(&Out1);
   frag_b[0] = *reinterpret_cast<const nv_bfloat162*>(&Out2);
 };
+#endif
 
 // subtract zero point in quanted format and then dequant
 template <typename scalar_t2, vllm::ScalarTypeId w_type_id,
@@ -604,6 +619,7 @@ __device__ inline void sub_zp_and_dequant<__nv_fp8x4_e4m3, vllm::kU4.id(),
   frag_b[1] = *reinterpret_cast<const __nv_fp8x4_e4m3*>(&Out2);
 }
 
+#undef MARLIN_BF16_SUPPORTED
 #endif
 
 }  // namespace MARLIN_NAMESPACE_NAME

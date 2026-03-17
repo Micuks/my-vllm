@@ -19,6 +19,47 @@ For events, please visit [vllm.ai/events](https://vllm.ai/events) to join us.
 
 ---
 
+## Fork: Adaptive MLFQ Scheduler for LLM Serving
+
+This fork replaces vLLM's default FCFS scheduler with an **adaptive multi-level feedback queue (MLFQ)** that improves throughput and tail latency under high concurrency.
+
+### Problem
+
+Under heavy load, FCFS treats all requests equally regardless of size. Long-running requests block short ones, inflating tail latency (TTFT) and reducing effective throughput.
+
+### Approach
+
+| Component | Description |
+|-----------|-------------|
+| **MLFQ + token demotion** | Requests drop priority as they consume tokens, letting short requests jump ahead |
+| **SJF penalty** | Deprioritizes requests with more remaining tokens (configurable prefill/decode weights) |
+| **LAS penalty** | Penalizes based on attained service for workload-agnostic fairness |
+| **Aging** | Boosts starved requests with dynamic scaling based on queue depth |
+| **Locality boost** | Prioritizes requests with prefix cache hits |
+| **Output backpressure** | Tracks pending output tokens per request; throttles token budget when consumers lag |
+| **Adaptive phase switching** | Automatically selects scheduling policy (FCFS / LAS / Aging-SJF) based on real-time load via EMA-smoothed RPS with hysteresis |
+| **Low-pressure bypass** | Reverts to baseline FCFS under light load to avoid unnecessary scheduling overhead |
+
+### Key files
+
+- `vllm/v1/core/sched/scheduler.py` -- core scheduling logic
+- `vllm/config/scheduler.py` -- 40+ tunable config knobs
+- `vllm/v1/engine/async_llm.py` / `output_processor.py` -- backpressure feedback loop
+- `tests/v1/core/test_scheduler_mlfq.py` -- unit tests
+- `tools/bench_*` -- benchmark scripts and visualization
+
+### Results (Qwen-3B, mixed-length workloads)
+
+| RPS | Throughput | TTFT (mean) | TTFT (p95) |
+|-----|-----------|-------------|------------|
+| 128 | +21% | -30.7% | -44.8% |
+| 256 | improved across all metrics | | |
+| 2-64 | no regression (low-pressure bypass) | | |
+
+Full benchmark details: [`docs/bench_aging_sjf.md`](docs/bench_aging_sjf.md)
+
+---
+
 ## About
 
 vLLM is a fast and easy-to-use library for LLM inference and serving.

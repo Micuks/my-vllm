@@ -439,6 +439,7 @@ class EngineArgs:
     max_long_partial_prefills: int = SchedulerConfig.max_long_partial_prefills
     long_prefill_token_threshold: int = SchedulerConfig.long_prefill_token_threshold
     mlfq_token_chunk_size: int = SchedulerConfig.mlfq_token_chunk_size
+    mlfq_enable_experimental: bool = SchedulerConfig.mlfq_enable_experimental
     mlfq_aging_seconds: float = SchedulerConfig.mlfq_aging_seconds
     mlfq_aging_dynamic_waiting_low: int = (
         SchedulerConfig.mlfq_aging_dynamic_waiting_low
@@ -455,6 +456,12 @@ class EngineArgs:
     mlfq_low_pressure_waiting_threshold: int = (
         SchedulerConfig.mlfq_low_pressure_waiting_threshold
     )
+    mlfq_low_pressure_pending_tokens_threshold: int = (
+        SchedulerConfig.mlfq_low_pressure_pending_tokens_threshold
+    )
+    mlfq_low_pressure_ratio_threshold: float = (
+        SchedulerConfig.mlfq_low_pressure_ratio_threshold
+    )
     mlfq_waiting_budget_fraction: float = SchedulerConfig.mlfq_waiting_budget_fraction
     mlfq_phase_rps_baseline_max: float = SchedulerConfig.mlfq_phase_rps_baseline_max
     mlfq_phase_rps_las_max: float = SchedulerConfig.mlfq_phase_rps_las_max
@@ -462,6 +469,15 @@ class EngineArgs:
     mlfq_phase_rps_ema_alpha: float = SchedulerConfig.mlfq_phase_rps_ema_alpha
     mlfq_phase_rps_hysteresis: float = SchedulerConfig.mlfq_phase_rps_hysteresis
     mlfq_phase_min_seconds: float = SchedulerConfig.mlfq_phase_min_seconds
+    mlfq_phase_pressure_baseline_max: float = (
+        SchedulerConfig.mlfq_phase_pressure_baseline_max
+    )
+    mlfq_phase_pressure_las_max: float = (
+        SchedulerConfig.mlfq_phase_pressure_las_max
+    )
+    mlfq_phase_pressure_pending_tokens: int = (
+        SchedulerConfig.mlfq_phase_pressure_pending_tokens
+    )
     mlfq_las_token_chunk_size: int = SchedulerConfig.mlfq_las_token_chunk_size
     mlfq_las_weight: float = SchedulerConfig.mlfq_las_weight
     mlfq_sjf_token_chunk_size: int = SchedulerConfig.mlfq_sjf_token_chunk_size
@@ -1170,6 +1186,10 @@ class EngineArgs:
             "--mlfq-token-chunk-size", **scheduler_kwargs["mlfq_token_chunk_size"]
         )
         scheduler_group.add_argument(
+            "--mlfq-enable-experimental",
+            **scheduler_kwargs["mlfq_enable_experimental"],
+        )
+        scheduler_group.add_argument(
             "--mlfq-aging-seconds", **scheduler_kwargs["mlfq_aging_seconds"]
         )
         scheduler_group.add_argument(
@@ -1191,6 +1211,14 @@ class EngineArgs:
         scheduler_group.add_argument(
             "--mlfq-low-pressure-waiting-threshold",
             **scheduler_kwargs["mlfq_low_pressure_waiting_threshold"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-low-pressure-pending-tokens-threshold",
+            **scheduler_kwargs["mlfq_low_pressure_pending_tokens_threshold"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-low-pressure-ratio-threshold",
+            **scheduler_kwargs["mlfq_low_pressure_ratio_threshold"],
         )
         scheduler_group.add_argument(
             "--mlfq-waiting-budget-fraction",
@@ -1219,6 +1247,18 @@ class EngineArgs:
         scheduler_group.add_argument(
             "--mlfq-phase-min-seconds",
             **scheduler_kwargs["mlfq_phase_min_seconds"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-phase-pressure-baseline-max",
+            **scheduler_kwargs["mlfq_phase_pressure_baseline_max"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-phase-pressure-las-max",
+            **scheduler_kwargs["mlfq_phase_pressure_las_max"],
+        )
+        scheduler_group.add_argument(
+            "--mlfq-phase-pressure-pending-tokens",
+            **scheduler_kwargs["mlfq_phase_pressure_pending_tokens"],
         )
         scheduler_group.add_argument(
             "--mlfq-las-token-chunk-size",
@@ -1830,6 +1870,7 @@ class EngineArgs:
             max_long_partial_prefills=self.max_long_partial_prefills,
             long_prefill_token_threshold=self.long_prefill_token_threshold,
             mlfq_token_chunk_size=self.mlfq_token_chunk_size,
+            mlfq_enable_experimental=self.mlfq_enable_experimental,
             mlfq_aging_seconds=self.mlfq_aging_seconds,
             mlfq_aging_dynamic_waiting_low=self.mlfq_aging_dynamic_waiting_low,
             mlfq_aging_dynamic_waiting_high=self.mlfq_aging_dynamic_waiting_high,
@@ -1838,6 +1879,12 @@ class EngineArgs:
             mlfq_low_pressure_waiting_threshold=(
                 self.mlfq_low_pressure_waiting_threshold
             ),
+            mlfq_low_pressure_pending_tokens_threshold=(
+                self.mlfq_low_pressure_pending_tokens_threshold
+            ),
+            mlfq_low_pressure_ratio_threshold=(
+                self.mlfq_low_pressure_ratio_threshold
+            ),
             mlfq_waiting_budget_fraction=self.mlfq_waiting_budget_fraction,
             mlfq_phase_rps_baseline_max=self.mlfq_phase_rps_baseline_max,
             mlfq_phase_rps_las_max=self.mlfq_phase_rps_las_max,
@@ -1845,6 +1892,13 @@ class EngineArgs:
             mlfq_phase_rps_ema_alpha=self.mlfq_phase_rps_ema_alpha,
             mlfq_phase_rps_hysteresis=self.mlfq_phase_rps_hysteresis,
             mlfq_phase_min_seconds=self.mlfq_phase_min_seconds,
+            mlfq_phase_pressure_baseline_max=(
+                self.mlfq_phase_pressure_baseline_max
+            ),
+            mlfq_phase_pressure_las_max=self.mlfq_phase_pressure_las_max,
+            mlfq_phase_pressure_pending_tokens=(
+                self.mlfq_phase_pressure_pending_tokens
+            ),
             mlfq_las_token_chunk_size=self.mlfq_las_token_chunk_size,
             mlfq_las_weight=self.mlfq_las_weight,
             mlfq_sjf_token_chunk_size=self.mlfq_sjf_token_chunk_size,

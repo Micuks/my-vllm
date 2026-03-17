@@ -159,9 +159,12 @@ class Scheduler(SchedulerInterface):
         self.running: list[Request] = []
         self.waiting_since: dict[str, float] = {}
         self._rps_arrivals: deque[float] = deque()
+        self._rps_completions: deque[float] = deque()
         self._rps_ema: float | None = None
+        self._out_rps_ema: float | None = None
         self._rps_phase: str | None = None
         self._rps_phase_last_switch: float = 0.0
+        self._low_pressure_active = False
 
         # The request IDs that are finished in between the previous and the
         # current steps. This is used to notify the workers about the finished
@@ -295,9 +298,32 @@ class Scheduler(SchedulerInterface):
             and cfg.mlfq_phase_rps_las_max > cfg.mlfq_phase_rps_baseline_max
         )
 
+    def _experimental_enabled(self) -> bool:
+        return self.scheduler_config.mlfq_enable_experimental
+
+    def _pressure_phase_enabled(self) -> bool:
+        cfg = self.scheduler_config
+        return (
+            cfg.mlfq_phase_pressure_baseline_max > 0
+            and cfg.mlfq_phase_pressure_las_max > 0
+            and cfg.mlfq_phase_pressure_las_max
+            > cfg.mlfq_phase_pressure_baseline_max
+        )
+
+    def _phase_enabled(self) -> bool:
+        if not self._experimental_enabled():
+            return False
+        return self._rps_phase_enabled() or self._pressure_phase_enabled()
+
+    def _should_track_rps(self) -> bool:
+        cfg = self.scheduler_config
+        if not self._experimental_enabled():
+            return False
+        return self._phase_enabled() or cfg.mlfq_low_pressure_ratio_threshold > 0
+
     def _record_arrival(self, timestamp: float) -> None:
         cfg = self.scheduler_config
-        if not self._rps_phase_enabled():
+        if not self._should_track_rps():
             return
         window = cfg.mlfq_phase_rps_window_s
         self._rps_arrivals.append(timestamp)
@@ -310,39 +336,139 @@ class Scheduler(SchedulerInterface):
             self._rps_ema = current_rps
         else:
             self._rps_ema = alpha * current_rps + (1 - alpha) * self._rps_ema
-        self._update_rps_phase(timestamp)
+        self._update_phase(timestamp)
 
-    def _update_rps_phase(self, timestamp: float) -> None:
-        if self._rps_ema is None:
+    def _record_completion(self, timestamp: float) -> None:
+        cfg = self.scheduler_config
+        if not self._should_track_rps():
+            return
+        window = cfg.mlfq_phase_rps_window_s
+        self._rps_completions.append(timestamp)
+        cutoff = timestamp - window
+        while self._rps_completions and self._rps_completions[0] < cutoff:
+            self._rps_completions.popleft()
+        current_rps = len(self._rps_completions) / window
+        alpha = cfg.mlfq_phase_rps_ema_alpha
+        if self._out_rps_ema is None:
+            self._out_rps_ema = current_rps
+        else:
+            self._out_rps_ema = (
+                alpha * current_rps + (1 - alpha) * self._out_rps_ema
+            )
+        self._update_phase(timestamp)
+
+    def _pressure_ratio(self) -> float | None:
+        if self._rps_ema is None or self._out_rps_ema is None:
+            return None
+        if self._out_rps_ema <= 0:
+            return None
+        return self._rps_ema / self._out_rps_ema
+
+    def _total_pending_tokens(self) -> int:
+        total = 0
+        for request in self.running:
+            total += request.output_pending_tokens
+        for request in self.waiting:
+            total += request.output_pending_tokens
+        return total
+
+    def _update_phase(self, timestamp: float) -> None:
+        if not self._phase_enabled():
             return
         cfg = self.scheduler_config
         hysteresis = cfg.mlfq_phase_rps_hysteresis
-        baseline_max = cfg.mlfq_phase_rps_baseline_max
-        las_max = cfg.mlfq_phase_rps_las_max
         phase = self._rps_phase or "baseline"
         if cfg.mlfq_phase_min_seconds > 0 and self._rps_phase_last_switch > 0:
             if (timestamp - self._rps_phase_last_switch) < cfg.mlfq_phase_min_seconds:
                 self._rps_phase = phase
                 return
-        rps = self._rps_ema
-        if phase == "baseline":
-            if rps > baseline_max + hysteresis:
-                phase = "las"
-        elif phase == "las":
-            if rps < baseline_max - hysteresis:
-                phase = "baseline"
-            elif rps > las_max + hysteresis:
-                phase = "aging-sjf"
-        else:
-            if rps < las_max - hysteresis:
-                phase = "las"
+        pending_tokens = self._total_pending_tokens()
+        ratio = None
+        use_pressure = False
+        if self._pressure_phase_enabled():
+            ratio = self._pressure_ratio()
+            if ratio is None:
+                return
+            use_pressure = True
+            baseline_max = cfg.mlfq_phase_pressure_baseline_max
+            las_max = cfg.mlfq_phase_pressure_las_max
+            pending_threshold = cfg.mlfq_phase_pressure_pending_tokens
+
+            def over(threshold: float) -> bool:
+                if pending_threshold > 0 and pending_tokens < pending_threshold:
+                    return False
+                return ratio > threshold
+
+            def under(threshold: float) -> bool:
+                if pending_threshold > 0 and pending_tokens >= pending_threshold:
+                    return False
+                return ratio < threshold
+
+            if phase == "baseline":
+                if over(baseline_max + hysteresis):
+                    phase = "las"
+            elif phase == "las":
+                if under(baseline_max - hysteresis):
+                    phase = "baseline"
+                elif over(las_max + hysteresis):
+                    phase = "aging-sjf"
+            else:
+                if under(las_max - hysteresis):
+                    phase = "las"
+        if not use_pressure:
+            if self._rps_ema is None or not self._rps_phase_enabled():
+                return
+            rps = self._rps_ema
+            baseline_max = cfg.mlfq_phase_rps_baseline_max
+            las_max = cfg.mlfq_phase_rps_las_max
+            if phase == "baseline":
+                if rps > baseline_max + hysteresis:
+                    phase = "las"
+            elif phase == "las":
+                if rps < baseline_max - hysteresis:
+                    phase = "baseline"
+                elif rps > las_max + hysteresis:
+                    phase = "aging-sjf"
+            else:
+                if rps < las_max - hysteresis:
+                    phase = "las"
         if phase != self._rps_phase:
+            mode = "pressure" if use_pressure else "rps"
+            ratio_str = "n/a" if ratio is None else f"{ratio:.2f}"
+            logger.info(
+                "MLFQ phase switch: %s -> %s (mode=%s rps_in=%.2f rps_out=%.2f ratio=%s pending=%d)",
+                self._rps_phase or "baseline",
+                phase,
+                mode,
+                self._rps_ema or 0.0,
+                self._out_rps_ema or 0.0,
+                ratio_str,
+                pending_tokens,
+            )
             self._rps_phase = phase
             self._rps_phase_last_switch = timestamp
 
     def _is_low_pressure(self) -> bool:
-        threshold = self.scheduler_config.mlfq_low_pressure_waiting_threshold
-        return threshold > 0 and len(self.waiting) <= threshold
+        if not self._experimental_enabled():
+            return False
+        cfg = self.scheduler_config
+        waiting_threshold = cfg.mlfq_low_pressure_waiting_threshold
+        pending_threshold = cfg.mlfq_low_pressure_pending_tokens_threshold
+        ratio_threshold = cfg.mlfq_low_pressure_ratio_threshold
+        waiting_ok = True
+        if waiting_threshold > 0:
+            waiting_ok = len(self.waiting) <= waiting_threshold
+        pending_ok = True
+        if pending_threshold > 0:
+            pending_ok = self._total_pending_tokens() <= pending_threshold
+        ratio_ok = True
+        if ratio_threshold > 0:
+            ratio = self._pressure_ratio()
+            if ratio is None:
+                ratio_ok = waiting_ok and pending_ok
+            else:
+                ratio_ok = ratio <= ratio_threshold
+        return waiting_ok and pending_ok and ratio_ok
 
     def _sjf_dynamic_factor(self) -> float:
         cfg = self.scheduler_config
@@ -430,6 +556,8 @@ class Scheduler(SchedulerInterface):
         return boost
 
     def _backpressure_penalty(self, request: Request, timestamp: float) -> int:
+        if not self._experimental_enabled():
+            return 0
         penalty = 0
         pending_threshold = self.scheduler_config.output_backpressure_pending_tokens
         level_penalty = self.scheduler_config.output_backpressure_penalty
@@ -450,6 +578,8 @@ class Scheduler(SchedulerInterface):
         return penalty
 
     def _is_backpressured(self, request: Request, timestamp: float) -> bool:
+        if not self._experimental_enabled():
+            return False
         pending_threshold = self.scheduler_config.output_backpressure_pending_tokens
         lag_threshold = self.scheduler_config.output_backpressure_lag_seconds
         if pending_threshold <= 0 and lag_threshold <= 0:
@@ -467,6 +597,8 @@ class Scheduler(SchedulerInterface):
         return False
 
     def _backpressure_token_cap(self, request: Request) -> int:
+        if not self._experimental_enabled():
+            return 0
         max_tokens = self.scheduler_config.output_backpressure_max_tokens
         if max_tokens <= 0:
             return 0
@@ -486,10 +618,11 @@ class Scheduler(SchedulerInterface):
         timestamp: float,
         *,
         include_aging: bool,
+        low_pressure_override: bool | None = None,
     ) -> int:
         phase = (
             (self._rps_phase or "baseline")
-            if self._rps_phase_enabled()
+            if self._phase_enabled()
             else None
         )
         enable_las = True
@@ -515,7 +648,13 @@ class Scheduler(SchedulerInterface):
         chunk_size = max(1, self.scheduler_config.mlfq_token_chunk_size)
         token_penalty = request.num_computed_tokens // chunk_size
         priority = base_priority + token_penalty
-        low_pressure = self._is_low_pressure()
+        if not self._experimental_enabled():
+            return priority
+        low_pressure = (
+            low_pressure_override
+            if low_pressure_override is not None
+            else self._is_low_pressure()
+        )
         if low_pressure:
             enable_las = False
             enable_sjf = False
@@ -548,9 +687,29 @@ class Scheduler(SchedulerInterface):
         if self.policy != SchedulingPolicy.PRIORITY:
             return
 
+        low_pressure = False
+        if self._experimental_enabled():
+            low_pressure = self._is_low_pressure()
+            if low_pressure != self._low_pressure_active:
+                ratio = self._pressure_ratio()
+                ratio_str = "n/a" if ratio is None else f"{ratio:.2f}"
+                logger.info(
+                    "MLFQ low-pressure bypass %s (waiting=%d pending=%d rps_in=%.2f rps_out=%.2f ratio=%s)",
+                    "enabled" if low_pressure else "disabled",
+                    len(self.waiting),
+                    self._total_pending_tokens(),
+                    self._rps_ema or 0.0,
+                    self._out_rps_ema or 0.0,
+                    ratio_str,
+                )
+                self._low_pressure_active = low_pressure
+
         for request in self.running:
             request.priority = self._effective_priority(
-                request, timestamp, include_aging=False
+                request,
+                timestamp,
+                include_aging=False,
+                low_pressure_override=low_pressure,
             )
 
         if not self.waiting:
@@ -560,7 +719,10 @@ class Scheduler(SchedulerInterface):
         updated = False
         for request in waiting_requests:
             new_priority = self._effective_priority(
-                request, timestamp, include_aging=True
+                request,
+                timestamp,
+                include_aging=True,
+                low_pressure_override=low_pressure,
             )
             if request.priority != new_priority:
                 request.priority = new_priority
@@ -2108,6 +2270,7 @@ class Scheduler(SchedulerInterface):
         self.finished_req_ids.add(request_id)
         if self.finished_req_ids_dict is not None:
             self.finished_req_ids_dict[request.client_index].add(request_id)
+        self._record_completion(time.monotonic())
 
         if not delay_free_blocks:
             self._free_blocks(request)

@@ -111,6 +111,10 @@ class SchedulerConfig:
     """Token chunk size used for MLFQ demotion. A request is demoted by one
     priority level for every chunk of computed tokens."""
 
+    mlfq_enable_experimental: bool = Field(default=False)
+    """Enable experimental MLFQ extensions (aging, SJF, LAS, locality, and
+    backpressure). Default is False for baseline behavior."""
+
     mlfq_aging_seconds: float = Field(default=5.0, ge=0.0)
     """Waiting-time aging interval (seconds) to boost priority and prevent
     starvation. Set to 0 to disable aging."""
@@ -133,6 +137,14 @@ class SchedulerConfig:
     """Waiting queue size at or below which the scheduler bypasses SJF, aging,
     and locality boosts to match baseline behavior. Set to 0 to disable."""
 
+    mlfq_low_pressure_pending_tokens_threshold: int = Field(default=0, ge=0)
+    """Total pending output tokens at or below which low-pressure bypass can
+    activate. Set to 0 to ignore pending tokens."""
+
+    mlfq_low_pressure_ratio_threshold: float = Field(default=0.0, ge=0.0)
+    """Max in/out RPS ratio (EMA) to consider low pressure. Set to 0 to
+    ignore the ratio check."""
+
     mlfq_waiting_budget_fraction: float = Field(default=0.2, ge=0.0, le=1.0)
     """Fraction of token budget reserved for waiting requests when priority
     scheduling is enabled. Improves short-request latency."""
@@ -154,6 +166,17 @@ class SchedulerConfig:
 
     mlfq_phase_min_seconds: float = Field(default=1.0, ge=0.0)
     """Minimum dwell time before switching phases."""
+
+    mlfq_phase_pressure_baseline_max: float = Field(default=0.0, ge=0.0)
+    """Max in/out RPS ratio (EMA) for baseline phase. Set to 0 to disable
+    pressure-based phases."""
+
+    mlfq_phase_pressure_las_max: float = Field(default=0.0, ge=0.0)
+    """Max in/out RPS ratio (EMA) for LAS phase. Above this uses aging-SJF."""
+
+    mlfq_phase_pressure_pending_tokens: int = Field(default=0, ge=0)
+    """Pending output token threshold that must be reached to trigger pressure
+    based phase transitions. Set to 0 to ignore."""
 
     mlfq_las_token_chunk_size: int = Field(default=0, ge=0)
     """Token chunk size used for LAS penalties. Set to 0 to disable LAS."""

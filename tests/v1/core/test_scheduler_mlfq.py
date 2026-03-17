@@ -94,3 +94,140 @@ def test_mlfq_aging_boosts_waiting_request():
 
     scheduler_output = scheduler.schedule()
     assert scheduler_output.scheduled_new_reqs[0].req_id == req_aged.request_id
+
+
+def test_mlfq_las_penalty_penalizes_attained_service():
+    scheduler = create_scheduler_with_priority(
+        block_size=1,
+        max_num_seqs=8,
+        max_num_batched_tokens=8192,
+    )
+    scheduler.scheduler_config.mlfq_las_token_chunk_size = 256
+    scheduler.scheduler_config.mlfq_las_weight = 1.0
+
+    request = create_requests_with_priority(
+        num_requests=1,
+        priorities=[0],
+        num_tokens=512,
+        max_tokens=256,
+        block_size=1,
+    )[0]
+    request.num_computed_tokens = 512
+
+    assert scheduler._las_penalty(request) == int((512 // 256) * 1.0)  # == 2
+
+    # Disabled when chunk_size is 0.
+    scheduler.scheduler_config.mlfq_las_token_chunk_size = 0
+    assert scheduler._las_penalty(request) == 0
+
+
+def test_mlfq_sjf_penalty_proportional_to_remaining():
+    scheduler = create_scheduler_with_priority(
+        block_size=1,
+        max_num_seqs=8,
+        max_num_batched_tokens=8192,
+    )
+    scheduler.scheduler_config.mlfq_sjf_token_chunk_size = 256
+    scheduler.scheduler_config.mlfq_sjf_weight = 1.0
+
+    request = create_requests_with_priority(
+        num_requests=1,
+        priorities=[0],
+        num_tokens=512,
+        max_tokens=256,
+        block_size=1,
+    )[0]
+    # total = 512 + 256 = 768, remaining = 768 - 0 = 768
+    request.num_computed_tokens = 0
+    assert scheduler._sjf_penalty(request) == int((768 // 256) * 1.0)  # == 3
+
+    # After computing 256 tokens, remaining = 768 - 256 = 512
+    request.num_computed_tokens = 256
+    assert scheduler._sjf_penalty(request) == int((512 // 256) * 1.0)  # == 2
+
+
+def test_mlfq_locality_boost_with_cap():
+    scheduler = create_scheduler_with_priority(
+        block_size=1,
+        max_num_seqs=8,
+        max_num_batched_tokens=8192,
+    )
+    scheduler.scheduler_config.mlfq_locality_weight = 1.0
+    scheduler.scheduler_config.mlfq_token_chunk_size = 256
+
+    request = create_requests_with_priority(
+        num_requests=1,
+        priorities=[0],
+        num_tokens=1,
+        max_tokens=1,
+        block_size=1,
+    )[0]
+    request.num_cached_tokens = 768
+
+    assert scheduler._locality_boost(request) == 3  # 768 // 256
+
+    # Apply cap.
+    scheduler.scheduler_config.mlfq_locality_max_boost = 1
+    assert scheduler._locality_boost(request) == 1
+
+
+def test_mlfq_backpressure_penalty_above_threshold():
+    scheduler = create_scheduler_with_priority(
+        block_size=1,
+        max_num_seqs=8,
+        max_num_batched_tokens=8192,
+    )
+    scheduler.scheduler_config.mlfq_enable_experimental = True
+    scheduler.scheduler_config.output_backpressure_pending_tokens = 64
+    scheduler.scheduler_config.output_backpressure_penalty = 2
+
+    request = create_requests_with_priority(
+        num_requests=1,
+        priorities=[0],
+        num_tokens=1,
+        max_tokens=1,
+        block_size=1,
+    )[0]
+    request.output_pending_tokens = 128
+
+    penalty = scheduler._backpressure_penalty(request, time.monotonic())
+    assert penalty == max(1, 128 // 64) * 2  # == 4
+
+    # Below threshold: no penalty.
+    request.output_pending_tokens = 32
+    assert scheduler._backpressure_penalty(request, time.monotonic()) == 0
+
+
+def test_mlfq_low_pressure_bypass():
+    scheduler = create_scheduler_with_priority(
+        max_num_seqs=1,
+        max_num_batched_tokens=1,
+        block_size=1,
+    )
+    scheduler.scheduler_config.mlfq_enable_experimental = True
+    scheduler.scheduler_config.mlfq_low_pressure_waiting_threshold = 8
+
+    # Add 3 requests (below threshold of 8).
+    requests_low = create_requests_with_priority(
+        num_requests=3,
+        priorities=[0, 0, 0],
+        num_tokens=1,
+        max_tokens=1,
+        block_size=1,
+    )
+    for r in requests_low:
+        scheduler.add_request(r)
+    assert scheduler._is_low_pressure() is True
+
+    # Add 6 more (total 9, above threshold of 8).
+    requests_high = create_requests_with_priority(
+        num_requests=6,
+        priorities=[0, 0, 0, 0, 0, 0],
+        num_tokens=1,
+        max_tokens=1,
+        block_size=1,
+        starting_idx=3,
+    )
+    for r in requests_high:
+        scheduler.add_request(r)
+    assert scheduler._is_low_pressure() is False

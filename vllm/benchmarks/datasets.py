@@ -668,6 +668,175 @@ class RandomDataset(BenchmarkDataset):
         return prompt, total_input_len, token_mismatch
 
 
+def _parse_csv_list(
+    value: str | list[int] | list[float] | None,
+    cast: Callable[[str], Any],
+    name: str,
+) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    parts = [part.strip() for part in value.split(",") if part.strip()]
+    if not parts:
+        return []
+    try:
+        return [cast(part) for part in parts]
+    except ValueError as exc:
+        raise ValueError(f"Invalid {name} list: {value}") from exc
+
+
+class RandomMixDataset(RandomDataset):
+    """
+    Synthetic dataset that samples from multiple (input, output) length buckets.
+
+    Buckets are configured via comma-separated lists and optional weights.
+    """
+
+    def __init__(
+        self,
+        *,
+        input_lens: str | list[int] | None = None,
+        output_lens: str | list[int] | None = None,
+        weights: str | list[float] | None = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._input_lens = [int(v) for v in _parse_csv_list(
+            input_lens, int, "random-mix-input-lens"
+        )]
+        self._output_lens = [int(v) for v in _parse_csv_list(
+            output_lens, int, "random-mix-output-lens"
+        )]
+        self._weights = [float(v) for v in _parse_csv_list(
+            weights, float, "random-mix-weights"
+        )]
+        self._validate_mix_config()
+
+    def _validate_mix_config(self) -> None:
+        if not self._input_lens:
+            raise ValueError(
+                "--random-mix-input-lens must be provided for random-mix dataset."
+            )
+        if not self._output_lens:
+            raise ValueError(
+                "--random-mix-output-lens must be provided for random-mix dataset."
+            )
+        if len(self._output_lens) == 1 and len(self._input_lens) > 1:
+            self._output_lens = self._output_lens * len(self._input_lens)
+        if len(self._input_lens) != len(self._output_lens):
+            raise ValueError(
+                "random-mix input/output lens must be the same length (or output "
+                "len can be a single value to apply to all buckets)."
+            )
+        if self._weights:
+            if len(self._weights) != len(self._input_lens):
+                raise ValueError(
+                    "random-mix weights must match the number of input lenses."
+                )
+        else:
+            self._weights = [1.0] * len(self._input_lens)
+        weight_sum = sum(self._weights)
+        if weight_sum <= 0:
+            raise ValueError("random-mix weights must sum to a positive value.")
+
+    def sample(
+        self,
+        tokenizer: TokenizerLike,
+        num_requests: int,
+        request_id_prefix: str = "",
+        no_oversample: bool = False,
+        prefix_len: int = RandomDataset.DEFAULT_PREFIX_LEN,
+        range_ratio: float = RandomDataset.DEFAULT_RANGE_RATIO,
+        **kwargs,
+    ) -> list[SampleRequest]:
+        num_special = int(tokenizer.num_special_tokens_to_add())
+        for base_input_len in self._input_lens:
+            real_input_len = max(0, int(base_input_len) - num_special)
+            min_sampled_input = math.floor(real_input_len * (1.0 - float(range_ratio)))
+            min_total_input = int(prefix_len) + min_sampled_input
+            if min_total_input < 1:
+                raise ValueError(
+                    "--random-mix-input-lens is too small: with tokenizer special "
+                    f"tokens {num_special} and --random-range-ratio {range_ratio}, "
+                    "the minimum possible total input tokens (prefix + sampled) is "
+                    f"{min_total_input}. Increase --random-mix-input-lens and/or "
+                    "--random-prefix-len, or decrease --random-range-ratio so that "
+                    "prefix_len + floor(max(0, random_mix_input_len - num_special)) "
+                    "* (1 - range_ratio) >= 1."
+                )
+
+        weights = np.asarray(self._weights, dtype=np.float64)
+        weights = weights / weights.sum()
+        buckets = self._rng.choice(len(self._input_lens), size=num_requests, p=weights)
+
+        input_lens = np.empty(num_requests, dtype=np.int64)
+        output_lens = np.empty(num_requests, dtype=np.int64)
+        offsets = np.empty(num_requests, dtype=np.int64)
+
+        for bucket_idx, base_input_len in enumerate(self._input_lens):
+            indices = np.where(buckets == bucket_idx)[0]
+            if indices.size == 0:
+                continue
+            base_output_len = self._output_lens[bucket_idx]
+            sampled_inputs, sampled_outputs, sampled_offsets = self.get_sampling_params(
+                indices.size,
+                range_ratio,
+                base_input_len,
+                base_output_len,
+                tokenizer,
+            )
+            input_lens[indices] = sampled_inputs
+            output_lens[indices] = sampled_outputs
+            offsets[indices] = sampled_offsets
+
+        vocab_size = tokenizer.vocab_size
+        prohibited_tokens = tokenizer.all_special_ids
+        all_tokens = np.arange(vocab_size)
+        allowed_tokens = np.array(list(set(all_tokens) - set(prohibited_tokens)))
+
+        prefix_token_ids = self.get_prefix(allowed_tokens, prefix_len)
+
+        requests = []
+        token_mismatch_total = 0
+        for i in range(num_requests):
+            prompt, total_input_len, token_mismatch = self.generate_token_sequence(
+                tokenizer=tokenizer,
+                prefix_token_ids=prefix_token_ids,
+                prefix_len=prefix_len,
+                vocab_size=vocab_size,
+                input_len=int(input_lens[i]),
+                offset=int(offsets[i]),
+                index=i,
+                allowed_tokens=allowed_tokens,
+            )
+            token_mismatch_total += token_mismatch
+            requests.append(
+                SampleRequest(
+                    prompt=prompt,
+                    prompt_len=total_input_len,
+                    expected_output_len=int(output_lens[i]),
+                    request_id=request_id_prefix + str(i),
+                )
+            )
+
+        if token_mismatch_total != 0:
+            sign = "more" if token_mismatch_total > 0 else "fewer"
+            logger.warning(
+                "Across all generated prompts, there were %d %s tokens "
+                "than expected after decoding and re-encoding. This is "
+                "expected due to the imperfect nature of the sampling "
+                "procedure.",
+                abs(token_mismatch_total),
+                sign,
+            )
+
+        self.maybe_oversample_requests(
+            requests, num_requests, request_id_prefix, no_oversample
+        )
+        return requests
+
+
 # -----------------------------------------------------------------------------
 # Random Dataset Implementation (Synthetic Data)
 # -----------------------------------------------------------------------------
@@ -1305,9 +1474,12 @@ class _ValidateDatasetArgs(argparse.Action):
         dataset_path = getattr(namespace, "dataset_path", None)
 
         # Validate the combination
-        if dataset_name == "random" and dataset_path is not None:
+        if (
+            dataset_name in {"random", "random-mm", "random-rerank", "random-mix"}
+            and dataset_path is not None
+        ):
             parser.error(
-                "Cannot use 'random' dataset with --dataset-path. "
+                "Cannot use random datasets with --dataset-path. "
                 "Please specify the appropriate --dataset-name (e.g., "
                 "'sharegpt', 'custom', 'sonnet') for your dataset file: "
                 f"{dataset_path}"
@@ -1332,6 +1504,7 @@ def add_dataset_parser(parser: FlexibleArgumentParser):
             "burstgpt",
             "sonnet",
             "random",
+            "random-mix",
             "random-mm",
             "random-rerank",
             "hf",
@@ -1511,6 +1684,7 @@ def add_random_dataset_base_args(
 
     This function adds arguments needed for:
     - random (random dataset)
+    - random-mix (random dataset with multiple length buckets)
     - random-mm (random multimodal dataset)
     - random-rerank (random dataset for reranking)
 
@@ -1528,6 +1702,33 @@ def add_random_dataset_base_args(
         type=int,
         default=128,
         help="Number of output tokens per request, used only for random sampling.",
+    )
+    parser_or_group.add_argument(
+        "--random-mix-input-lens",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated input lengths for random-mix sampling. "
+            "Example: 256,1024,2048"
+        ),
+    )
+    parser_or_group.add_argument(
+        "--random-mix-output-lens",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated output lengths for random-mix sampling. "
+            "Example: 32,128,512"
+        ),
+    )
+    parser_or_group.add_argument(
+        "--random-mix-weights",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated weights for random-mix buckets. "
+            "Example: 0.5,0.3,0.2"
+        ),
     )
     parser_or_group.add_argument(
         "--random-range-ratio",
@@ -1887,6 +2088,21 @@ def get_samples(args, tokenizer: TokenizerLike) -> list[SampleRequest]:
                 range_ratio=args.random_range_ratio,
                 request_id_prefix=args.request_id_prefix,
                 batchsize=args.random_batch_size,
+                no_oversample=args.no_oversample,
+            ),
+            "random-mix": lambda: RandomMixDataset(
+                random_seed=args.seed,
+                dataset_path=args.dataset_path,
+                disable_shuffle=args.disable_shuffle,
+                input_lens=args.random_mix_input_lens,
+                output_lens=args.random_mix_output_lens,
+                weights=args.random_mix_weights,
+            ).sample(
+                tokenizer=tokenizer,
+                num_requests=args.num_prompts,
+                prefix_len=args.random_prefix_len,
+                range_ratio=args.random_range_ratio,
+                request_id_prefix=args.request_id_prefix,
                 no_oversample=args.no_oversample,
             ),
             "random-mm": lambda: RandomMultiModalDataset(

@@ -25,6 +25,7 @@ from vllm.benchmarks.datasets import (
     PrefixRepetitionRandomDataset,
     RandomDataset,
     RandomDatasetForReranking,
+    RandomMixDataset,
     RandomMultiModalDataset,
     SampleRequest,
     ShareGPTDataset,
@@ -350,7 +351,8 @@ def get_requests(args, tokenizer):
 
     if args.dataset_name == "random" or (
         args.dataset_path is None
-        and args.dataset_name not in {"prefix_repetition", "random-mm", "random-rerank"}
+        and args.dataset_name
+        not in {"prefix_repetition", "random-mm", "random-rerank", "random-mix"}
     ):
         sample_kwargs["range_ratio"] = args.random_range_ratio
         # prefer random_* arguments, fall back to regular arguments
@@ -367,6 +369,13 @@ def get_requests(args, tokenizer):
             random_output_len if random_output_len is not None else args.output_len
         )
         dataset_cls = RandomDataset
+    elif args.dataset_name == "random-mix":
+        sample_kwargs["range_ratio"] = args.random_range_ratio
+        sample_kwargs["prefix_len"] = args.random_prefix_len
+        sample_kwargs["input_lens"] = args.random_mix_input_lens
+        sample_kwargs["output_lens"] = args.random_mix_output_lens
+        sample_kwargs["weights"] = args.random_mix_weights
+        dataset_cls = RandomMixDataset
     elif args.dataset_name == "sharegpt":
         dataset_cls = ShareGPTDataset
         if args.backend == "vllm-chat":
@@ -519,7 +528,7 @@ def validate_args(args):
     if (
         not args.dataset
         and not args.dataset_path
-        and args.dataset_name not in {"prefix_repetition"}
+        and args.dataset_name not in {"prefix_repetition", "random-mix"}
     ):
         print("When dataset path is not set, it will default to random dataset")
         args.dataset_name = "random"
@@ -562,14 +571,14 @@ def validate_args(args):
             raise ValueError(f"{args.dataset_path} is not supported by hf dataset.")
 
     # --random-range-ratio: only used when dataset_name is 'random',
-    # 'random-mm', or 'random-rerank'
+    # 'random-mix', 'random-mm', or 'random-rerank'
     if (
-        args.dataset_name not in {"random", "random-mm", "random-rerank"}
+        args.dataset_name not in {"random", "random-mix", "random-mm", "random-rerank"}
         and args.random_range_ratio is not None
     ):
         warnings.warn(
             "--random-range-ratio will be ignored since \
-                --dataset-name is not 'random', 'random-mm', or 'random-rerank'.",
+                --dataset-name is not 'random', 'random-mix', 'random-mm', or 'random-rerank'.",
             stacklevel=2,
         )
 
@@ -592,25 +601,37 @@ def validate_args(args):
             stacklevel=2,
         )
 
-    # --prefix-len: only used when dataset_name is 'random', 'random-mm',
-    # 'sonnet', or not set.
+    # --prefix-len: only used when dataset_name is 'random', 'random-mix',
+    # 'random-mm', 'sonnet', or not set.
     if (
-        args.dataset_name not in {"random", "random-mm", "sonnet", None}
+        args.dataset_name not in {"random", "random-mix", "random-mm", "sonnet", None}
         and args.prefix_len is not None
     ):
         warnings.warn(
             "--prefix-len will be ignored since --dataset-name\
-                 is not 'random', 'random-mm', 'sonnet', or not set.",
+                 is not 'random', 'random-mix', 'random-mm', 'sonnet', or not set.",
             stacklevel=2,
         )
 
     # === Random Dataset Argument Conflict Detection ===
     # Check for conflicts between regular and random arguments when using
     # random datasets
-    if args.dataset_name in {"random", "random-mm", "random-rerank"}:
+    if args.dataset_name in {"random", "random-mix", "random-mm", "random-rerank"}:
         random_input_len = getattr(args, "random_input_len", None)
         random_output_len = getattr(args, "random_output_len", None)
         random_prefix_len = getattr(args, "random_prefix_len", None)
+        random_mix_input_lens = getattr(args, "random_mix_input_lens", None)
+        random_mix_output_lens = getattr(args, "random_mix_output_lens", None)
+
+        if (
+            args.dataset_name == "random-mix"
+            and (random_mix_input_lens is None or random_mix_output_lens is None)
+        ):
+            warnings.warn(
+                "--dataset-name is 'random-mix' but random-mix lens are not set. "
+                "Provide --random-mix-input-lens and --random-mix-output-lens.",
+                stacklevel=2,
+            )
 
         if args.input_len is not None and random_input_len is not None:
             warnings.warn(
@@ -631,6 +652,27 @@ def validate_args(args):
                 "Both --prefix-len and --random-prefix-len are specified. "
                 "The random version (--random-prefix-len) will be preferred "
                 "in this run.",
+                stacklevel=2,
+            )
+
+        if (
+            args.dataset_name == "random-mix"
+            and random_mix_input_lens is not None
+            and (args.input_len is not None or random_input_len is not None)
+        ):
+            warnings.warn(
+                "--random-mix-input-lens is set; input length arguments "
+                "(--input-len/--random-input-len) will be ignored.",
+                stacklevel=2,
+            )
+        if (
+            args.dataset_name == "random-mix"
+            and random_mix_output_lens is not None
+            and (args.output_len is not None or random_output_len is not None)
+        ):
+            warnings.warn(
+                "--random-mix-output-lens is set; output length arguments "
+                "(--output-len/--random-output-len) will be ignored.",
                 stacklevel=2,
             )
 
@@ -686,6 +728,7 @@ def add_cli_args(parser: argparse.ArgumentParser):
         choices=[
             "sharegpt",
             "random",
+            "random-mix",
             "sonnet",
             "burstgpt",
             "hf",

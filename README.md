@@ -48,13 +48,32 @@ Under heavy load, FCFS treats all requests equally regardless of size. Long-runn
 - `tests/v1/core/test_scheduler_mlfq.py` -- unit tests
 - `tools/bench_*` -- benchmark scripts and visualization
 
-### Results (Qwen-3B, mixed-length workloads)
+### Results
 
-| RPS | Throughput | TTFT (mean) | TTFT (p95) |
-|-----|-----------|-------------|------------|
-| 128 | +21% | -30.7% | -44.8% |
-| 256 | improved across all metrics | | |
-| 2-64 | no regression (low-pressure bypass) | | |
+Benchmarked with split profile (low-pressure: baseline, high-pressure: aging-SJF),
+burstiness=2, mixed-length workloads (`random-mix`), goodput thresholds
+(`ttft:2000 tpot:200 e2el:30000`), 500 prompts per RPS point.
+
+**Qwen2.5-3B-Instruct (RTX 6000 24GB):**
+
+| RPS | Throughput | Goodput | Mean TTFT | P95 TTFT | P95 E2EL |
+|-----|-----------|---------|-----------|----------|----------|
+| 4 | +6.3% | **+22.7%** | **+25.1%** | **+27.5%** | **+28.2%** |
+| 16 | +1.9% | +4.0% | +1.0% | +8.0% | +2.5% |
+| 64 | +7.9% | **+9.9%** | -0.3% | +3.3% | +3.8% |
+| 128 | -2.5% | +3.1% | **+17.5%** | **+58.3%** | -3.1% |
+| 256 | -3.9% | -2.4% | **+9.1%** | **+40.2%** | -3.7% |
+
+Key takeaways:
+- **P95 TTFT improves 40--58% under high pressure** (RPS 128/256) -- the primary goal
+- Low-pressure bypass ensures **no regression at low RPS**
+- Trade-off: slight throughput and TPOT decrease at high RPS (SJF prioritizes short requests, deferring long ones)
+
+**Qwen3-4B (earlier run, A100-class GPU):**
+
+| RPS | Throughput | Goodput | Mean TTFT | P95 TTFT |
+|-----|-----------|---------|-----------|----------|
+| 128 | **+21.0%** | **+35.5%** | **-30.7%** | **-44.8%** |
 
 Full benchmark details: [`docs/bench_aging_sjf.md`](docs/bench_aging_sjf.md)
 

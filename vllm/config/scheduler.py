@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 RunnerType = Literal["generate", "pooling", "draft"]
-SchedulerPolicy = Literal["fcfs", "priority"]
+SchedulerPolicy = Literal["fcfs", "priority", "goodput"]
 
 
 @config
@@ -109,10 +109,56 @@ class SchedulerConfig:
     policy: SchedulerPolicy = "fcfs"
     """The scheduling policy to use:
 
-    - "fcfs" means first come first served, i.e. requests are handled in order 
+    - "fcfs" means first come first served, i.e. requests are handled in order
       of arrival.
     - "priority" means requests are handled based on given priority (lower
-      value means earlier handling) and time of arrival deciding any ties)."""
+      value means earlier handling) and time of arrival deciding any ties).
+    - "goodput" means SLO-aware scoring: requests close to TTFT/E2EL deadlines
+      are boosted, with prefill length and prefix-cache hit as proxies when
+      no request is near deadline. Tunable via the `--goodput-*` flags."""
+
+    # Goodput policy hyperparameters. Active iff policy="goodput".
+    goodput_ttft_slo_s: float = Field(default=2.0, gt=0.0)
+    """TTFT deadline (seconds) used by the goodput scorer."""
+    goodput_tpot_slo_s: float = Field(default=0.1, gt=0.0)
+    """TPOT deadline (seconds). Used by the goodput post-hoc evaluator only
+    in Phase 1; the score function does not consume it directly."""
+    goodput_e2el_slo_s: float = Field(default=30.0, gt=0.0)
+    """End-to-end latency deadline (seconds)."""
+    goodput_tau: float = Field(default=0.5, ge=0.0, lt=1000.0)
+    """SLO_pressure activation threshold. Values in [0, 1) follow the
+    documented piecewise ramp (below tau · SLO pressure is zero and
+    proxy signals decide ordering). Values >= 1 effectively disable
+    SLO_pressure for any realistic load (since ratio<tau holds), letting
+    length and cache signals drive ordering alone — useful for
+    ablations on cache-aware SJF behaviour."""
+    goodput_weight_length: float = Field(default=1.0, ge=0.0)
+    """alpha — weight on remaining-prefill-tokens length signal."""
+    goodput_weight_cache: float = Field(default=1.0, ge=0.0)
+    """beta — weight on prefix-cache hit boost."""
+    goodput_pressure_clamp: float = Field(default=float("inf"), ge=1.0)
+    """Cap on raw SLO_pressure ratio. Default `inf` keeps the original
+    behaviour where one badly-late request drowns out everything else.
+    Setting `1.0` makes all deadline-violating requests tie at M, so
+    length_signal and cache_signal break the ties — usually the right
+    default when many requests miss deadline simultaneously (saturated
+    serving)."""
+
+    # Phase-2 closed-loop TPOT controller. `goodput_gamma_max=0` disables
+    # the controller and reproduces Phase-1 open-loop behaviour.
+    goodput_tpot_target_s: float = Field(default=0.08, gt=0.0)
+    """Target steady-state TPOT (seconds) for the closed-loop controller.
+    Default 80 ms = 0.8 × the default TPOT SLO of 100 ms."""
+    goodput_gamma_kp: float = Field(default=50.0, ge=0.0)
+    """Proportional gain of the PI controller."""
+    goodput_gamma_ki: float = Field(default=5.0, ge=0.0)
+    """Integral gain of the PI controller."""
+    goodput_gamma_max: float = Field(default=0.0, ge=0.0)
+    """Upper bound on adaptive gamma. Default 0 disables the controller
+    (open-loop); set to ~200 to enable closed-loop TPOT-aware admission."""
+    goodput_concurrency_floor: int = Field(default=4, ge=1)
+    """Lower bound on the dynamic concurrent-decoder cap, even when
+    gamma == gamma_max."""
 
     disable_chunked_mm_input: bool = False
     """If set to true and chunked prefill is enabled, we do not want to

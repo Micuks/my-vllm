@@ -630,6 +630,18 @@ class EngineArgs:
     enable_mm_processor_stats: bool = ObservabilityConfig.enable_mm_processor_stats
     scheduling_policy: SchedulerPolicy = SchedulerConfig.policy
     scheduler_cls: str | type[object] | None = SchedulerConfig.scheduler_cls
+    goodput_ttft_slo_s: float = SchedulerConfig.goodput_ttft_slo_s
+    goodput_tpot_slo_s: float = SchedulerConfig.goodput_tpot_slo_s
+    goodput_e2el_slo_s: float = SchedulerConfig.goodput_e2el_slo_s
+    goodput_tau: float = SchedulerConfig.goodput_tau
+    goodput_weight_length: float = SchedulerConfig.goodput_weight_length
+    goodput_weight_cache: float = SchedulerConfig.goodput_weight_cache
+    goodput_pressure_clamp: float = SchedulerConfig.goodput_pressure_clamp
+    goodput_tpot_target_s: float = SchedulerConfig.goodput_tpot_target_s
+    goodput_gamma_kp: float = SchedulerConfig.goodput_gamma_kp
+    goodput_gamma_ki: float = SchedulerConfig.goodput_gamma_ki
+    goodput_gamma_max: float = SchedulerConfig.goodput_gamma_max
+    goodput_concurrency_floor: int = SchedulerConfig.goodput_concurrency_floor
 
     pooler_config: PoolerConfig | None = ModelConfig.pooler_config
     compilation_config: CompilationConfig = get_field(VllmConfig, "compilation_config")
@@ -1362,6 +1374,56 @@ class EngineArgs:
         scheduler_group.add_argument(
             "--scheduling-policy", **scheduler_kwargs["policy"]
         )
+        # Goodput policy hyperparameters (only consumed when
+        # --scheduling-policy goodput).
+        scheduler_group.add_argument(
+            "--goodput-ttft-slo-s",
+            **scheduler_kwargs["goodput_ttft_slo_s"],
+        )
+        scheduler_group.add_argument(
+            "--goodput-tpot-slo-s",
+            **scheduler_kwargs["goodput_tpot_slo_s"],
+        )
+        scheduler_group.add_argument(
+            "--goodput-e2el-slo-s",
+            **scheduler_kwargs["goodput_e2el_slo_s"],
+        )
+        scheduler_group.add_argument(
+            "--goodput-tau",
+            **scheduler_kwargs["goodput_tau"],
+        )
+        scheduler_group.add_argument(
+            "--goodput-weight-length",
+            **scheduler_kwargs["goodput_weight_length"],
+        )
+        scheduler_group.add_argument(
+            "--goodput-weight-cache",
+            **scheduler_kwargs["goodput_weight_cache"],
+        )
+        scheduler_group.add_argument(
+            "--goodput-pressure-clamp",
+            **scheduler_kwargs["goodput_pressure_clamp"],
+        )
+        scheduler_group.add_argument(
+            "--goodput-tpot-target-s",
+            **scheduler_kwargs["goodput_tpot_target_s"],
+        )
+        scheduler_group.add_argument(
+            "--goodput-gamma-kp",
+            **scheduler_kwargs["goodput_gamma_kp"],
+        )
+        scheduler_group.add_argument(
+            "--goodput-gamma-ki",
+            **scheduler_kwargs["goodput_gamma_ki"],
+        )
+        scheduler_group.add_argument(
+            "--goodput-gamma-max",
+            **scheduler_kwargs["goodput_gamma_max"],
+        )
+        scheduler_group.add_argument(
+            "--goodput-concurrency-floor",
+            **scheduler_kwargs["goodput_concurrency_floor"],
+        )
         scheduler_group.add_argument(
             "--enable-chunked-prefill",
             **{
@@ -1989,6 +2051,18 @@ class EngineArgs:
             is_encoder_decoder=model_config.is_encoder_decoder,
             policy=self.scheduling_policy,
             scheduler_cls=self.scheduler_cls,
+            goodput_ttft_slo_s=self.goodput_ttft_slo_s,
+            goodput_tpot_slo_s=self.goodput_tpot_slo_s,
+            goodput_e2el_slo_s=self.goodput_e2el_slo_s,
+            goodput_tau=self.goodput_tau,
+            goodput_weight_length=self.goodput_weight_length,
+            goodput_weight_cache=self.goodput_weight_cache,
+            goodput_pressure_clamp=self.goodput_pressure_clamp,
+            goodput_tpot_target_s=self.goodput_tpot_target_s,
+            goodput_gamma_kp=self.goodput_gamma_kp,
+            goodput_gamma_ki=self.goodput_gamma_ki,
+            goodput_gamma_max=self.goodput_gamma_max,
+            goodput_concurrency_floor=self.goodput_concurrency_floor,
             max_num_partial_prefills=self.max_num_partial_prefills,
             max_long_partial_prefills=self.max_long_partial_prefills,
             long_prefill_token_threshold=self.long_prefill_token_threshold,

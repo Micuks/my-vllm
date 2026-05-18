@@ -160,10 +160,51 @@ class Scheduler(SchedulerInterface):
             raise ValueError(
                 f"Unknown scheduling policy: {self.scheduler_config.policy}"
             ) from e
+
+        # Goodput policy: build a single shared scorer and pass it to both
+        # waiting queues.
+        self._goodput_scorer = None
+        # Wallclock of the last `update_from_output` call. Used to feed
+        # iteration duration into the goodput scorer for closed-loop TPOT
+        # control. None until the first step finishes.
+        self._goodput_prev_iter_ts: float | None = None
+        if self.policy == SchedulingPolicy.GOODPUT:
+            from vllm.v1.core.sched.goodput_scorer import (
+                GoodputConfig,
+                GoodputScorer,
+            )
+            cfg = GoodputConfig(
+                ttft_slo_s=self.scheduler_config.goodput_ttft_slo_s,
+                tpot_slo_s=self.scheduler_config.goodput_tpot_slo_s,
+                e2el_slo_s=self.scheduler_config.goodput_e2el_slo_s,
+                tau=self.scheduler_config.goodput_tau,
+                alpha=self.scheduler_config.goodput_weight_length,
+                beta=self.scheduler_config.goodput_weight_cache,
+                pressure_clamp=self.scheduler_config.goodput_pressure_clamp,
+                tpot_target_s=self.scheduler_config.goodput_tpot_target_s,
+                gamma_kp=self.scheduler_config.goodput_gamma_kp,
+                gamma_ki=self.scheduler_config.goodput_gamma_ki,
+                gamma_max=self.scheduler_config.goodput_gamma_max,
+                concurrency_floor=self.scheduler_config.goodput_concurrency_floor,
+            )
+            self._goodput_scorer = GoodputScorer(
+                cfg, max_prompt_tokens=vllm_config.model_config.max_model_len
+            )
+            # Wired to kv_cache_manager below once it's constructed, so
+            # the scorer can be cache-hit-aware at scoring time. Without
+            # this, length_signal can't distinguish "long prompt that's
+            # mostly cached" from "long prompt with no cache" — fatal
+            # for agentic / multi-turn workloads where cache hit rates
+            # are high.
+
         # Priority queues for requests.
-        self.waiting = create_request_queue(self.policy)
+        self.waiting = create_request_queue(
+            self.policy, scorer=self._goodput_scorer
+        )
         # requests skipped in waiting flow due async deps or constraints.
-        self.skipped_waiting = create_request_queue(self.policy)
+        self.skipped_waiting = create_request_queue(
+            self.policy, scorer=self._goodput_scorer
+        )
         self.running: list[Request] = []
 
         # The request IDs that are finished in between the previous and the
@@ -235,6 +276,10 @@ class Scheduler(SchedulerInterface):
             hash_block_size=hash_block_size,
             metrics_collector=self.kv_metrics_collector,
         )
+        # Wire the kv_cache_manager into the goodput scorer so it can do
+        # cache-aware length scoring at admission time.
+        if self._goodput_scorer is not None:
+            self._goodput_scorer.kv_cache_manager = self.kv_cache_manager
         # Bind GPU block pool to the KV connector. This must happen after
         # kv_cache_manager is constructed so block_pool is available.
         if self.connector is not None:
@@ -342,6 +387,17 @@ class Scheduler(SchedulerInterface):
         scheduled_resumed_reqs: list[Request] = []
         scheduled_running_reqs: list[Request] = []
         preempted_reqs: list[Request] = []
+
+        # Goodput policy: refresh score-ordered queues at the start of each
+        # scheduling pass. The cost is O(n) where n is queue size; for typical
+        # serving workloads this is dominated by the model forward pass.
+        if self._goodput_scorer is not None:
+            from vllm.v1.core.sched.request_queue import GoodputRequestQueue
+            now = time.time()
+            if isinstance(self.waiting, GoodputRequestQueue):
+                self.waiting.refresh(now)
+            if isinstance(self.skipped_waiting, GoodputRequestQueue):
+                self.skipped_waiting.refresh(now)
 
         req_to_new_blocks: dict[str, KVCacheBlocks] = {}
         num_scheduled_tokens: dict[str, int] = {}
@@ -543,10 +599,25 @@ class Scheduler(SchedulerInterface):
 
         # Next, schedule the WAITING requests.
         if not preempted_reqs and self._pause_state == PauseState.UNPAUSED:
-            step_skipped_waiting = create_request_queue(self.policy)
+            step_skipped_waiting = create_request_queue(
+                self.policy, scorer=self._goodput_scorer
+            )
+
+            # Closed-loop TPOT controller (Phase 2): the goodput scorer
+            # adapts a hidden gain `gamma` from observed TPOT and shrinks
+            # the effective concurrent-decoder cap when TPOT exceeds the
+            # target. When the controller is disabled (gamma_max == 0)
+            # this returns the unchanged static cap.
+            effective_running_cap = self.max_num_running_reqs
+            if self._goodput_scorer is not None:
+                effective_running_cap = (
+                    self._goodput_scorer.effective_max_running(
+                        self.max_num_running_reqs
+                    )
+                )
 
             while (self.waiting or self.skipped_waiting) and token_budget > 0:
-                if len(self.running) == self.max_num_running_reqs:
+                if len(self.running) >= effective_running_cap:
                     break
 
                 request_queue = self._select_waiting_queue_for_scheduling()
@@ -1600,6 +1671,31 @@ class Scheduler(SchedulerInterface):
                 engine_core_outputs[0] = eco = EngineCoreOutputs()
             eco.scheduler_stats = stats
 
+        # Feed the goodput scorer with the duration of the iteration that
+        # just finished, but only when the closed-loop controller is
+        # enabled. When `gamma_max == 0` (default) this branch is skipped
+        # entirely so the open-loop scoring path is byte-equal to the
+        # pre-Phase-2 behaviour — `tpot_avg_s` returns the static
+        # `initial_tpot_s` and SLO_pressure ETA projection is unchanged.
+        # Cheap when enabled: one perf_counter() + a few floats per step.
+        if (
+            self._goodput_scorer is not None
+            and self._goodput_scorer.config.gamma_max > 0.0
+        ):
+            now_iter = time.perf_counter()
+            if self._goodput_prev_iter_ts is not None:
+                iter_dur = now_iter - self._goodput_prev_iter_ts
+                # Sum of tokens decoded across all running requests this
+                # step. `sampled_token_ids` is a list-of-lists where each
+                # inner list holds the tokens sampled for one request.
+                num_out = sum(len(toks) for toks in sampled_token_ids)
+                if iter_dur > 0 and num_out > 0:
+                    self._goodput_scorer.record_iteration(iter_dur, num_out)
+                    self._goodput_scorer.gamma_tick(
+                        self._goodput_scorer.tpot_avg_s, now_iter
+                    )
+            self._goodput_prev_iter_ts = now_iter
+
         return engine_core_outputs
 
     @staticmethod
@@ -1860,6 +1956,8 @@ class Scheduler(SchedulerInterface):
     def _free_blocks(self, request: Request):
         assert request.is_finished()
         self.kv_cache_manager.free(request)
+        if self._goodput_scorer is not None:
+            self._goodput_scorer.discard(request.request_id)
         del self.requests[request.request_id]
 
     @property

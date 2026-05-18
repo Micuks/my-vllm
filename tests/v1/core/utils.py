@@ -57,6 +57,8 @@ def create_scheduler(
     pipeline_parallel_size: int = 1,
     use_ec_connector: bool = False,
     ec_role: str | None = None,
+    scheduling_policy: str = "fcfs",
+    goodput_overrides: dict | None = None,
 ) -> Scheduler | AsyncScheduler:
     """Create scheduler under test.
 
@@ -80,7 +82,7 @@ def create_scheduler(
     )
     if max_model_len is None:
         max_model_len = max_num_batched_tokens
-    scheduler_config = SchedulerConfig(
+    scheduler_kwargs = dict(
         max_num_seqs=max_num_seqs,
         max_num_batched_tokens=max_num_batched_tokens,
         max_model_len=max_model_len,
@@ -89,7 +91,11 @@ def create_scheduler(
         enable_chunked_prefill=enable_chunked_prefill,
         async_scheduling=async_scheduling,
         is_encoder_decoder=model_config.is_encoder_decoder,
+        policy=scheduling_policy,
     )
+    if goodput_overrides:
+        scheduler_kwargs.update(goodput_overrides)
+    scheduler_config = SchedulerConfig(**scheduler_kwargs)
     # Cache config, optionally force APC
     cache_config = CacheConfig(
         block_size=block_size,
